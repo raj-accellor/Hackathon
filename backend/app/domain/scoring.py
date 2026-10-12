@@ -128,8 +128,13 @@ def score_universe(
     rows: Mapping[str, Mapping[str, Any]],
     profile: Mapping[str, list[MetricSpec]] | None = None,
     peer_groups: Mapping[str, str | None] | None = None,
+    inapplicable: Mapping[str, set[str]] | None = None,
 ) -> dict[str, ScoreResult]:
+    """`inapplicable` maps an instrument to metrics that do not apply to it (for example leverage
+    ratios for a bank). Those metrics are removed from that instrument's pillar denominator and do
+    not count as missing data."""
     profile = profile or DEFAULT_PROFILE
+    inapplicable = inapplicable or {}
     ids = sorted(rows)
     # metric -> id -> (percentile, scope)
     ranked: dict[str, dict[str, tuple[float | None, str]]] = {}
@@ -159,17 +164,22 @@ def score_universe(
         total = present = 0
         for pillar, specs in profile.items():
             details = []
+            skip = inapplicable.get(i, set())
             for spec in specs:
+                if spec.name in skip:
+                    details.append(MetricScore(spec.name, None, None, spec.higher_is_better, "not_applicable"))
+                    continue
                 sc, scope = ranked[spec.name][i]
                 details.append(MetricScore(spec.name, _num(rows[i].get(spec.name)), sc, spec.higher_is_better, scope))
-            used = [d.score for d in details if d.score is not None]
-            total += len(details)
+            applicable = [d for d in details if d.peer_scope != "not_applicable"]
+            used = [d.score for d in applicable if d.score is not None]
+            total += len(applicable)
             present += len(used)
-            missing += [d.name for d in details if d.score is None]
-            sufficient = bool(details) and len(used) / len(details) >= MIN_PILLAR_COVERAGE and len(used) > 0
+            missing += [d.name for d in applicable if d.score is None]
+            sufficient = bool(applicable) and len(used) / len(applicable) >= MIN_PILLAR_COVERAGE and len(used) > 0
             score = sum(used) / len(used) if sufficient else None
             w = PILLAR_WEIGHTS.get(pillar, 1 / len(profile))
-            pillars[pillar] = PillarResult(pillar, score, sufficient, len(used), len(details), w,
+            pillars[pillar] = PillarResult(pillar, score, sufficient, len(used), len(applicable), w,
                                            None if score is None else score * w, details)
             all_scores += [d for d in details if d.score is not None]
         avail = [p for p in pillars.values() if p.sufficient]

@@ -69,3 +69,69 @@ def mock_state(mock_mcp):
     STATE.calls.clear()
     STATE.fail_next.clear()
     return STATE
+
+
+# ---------------------------------------------------------------- full demo application
+import contextlib  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from typing import Any  # noqa: E402
+
+import httpx  # noqa: E402
+import pytest_asyncio  # noqa: E402
+
+
+@dataclass
+class Demo:
+    container: Any
+    app: Any
+    client: httpx.AsyncClient
+    settings: Any
+    refresh: dict
+    make_client: Any
+
+
+@pytest_asyncio.fixture(scope="session")
+async def demo(mock_mcp, tmp_path_factory):
+    """The real application in demo mode: MCP connectors -> mock servers, SQLite, full pipeline run once."""
+    from app.core.config import Settings
+    from app.core.container import build_container
+    from app.devtools.mock_mcp import STATE
+    from app.main import create_app
+    from app.services import jobs, pipeline
+
+    tmp = tmp_path_factory.mktemp("demo")
+    base = dict(_env_file=None, app_env="test", data_mode="demo", database_url=f"sqlite+aiosqlite:///{tmp}/app.db",
+                mock_mcp_port=int(mock_mcp["port"]), scheduler_enabled=False, fundamentals_dir=tmp / "fund", history_years=2,
+                rate_limit_research_per_minute=10_000, rate_limit_refresh_per_minute=10_000, rate_limit_default_per_minute=100_000)
+    settings = Settings(**base)
+    STATE.kite_logged_in = True
+    container = build_container(settings)
+    app = create_app(settings, container, run_startup_jobs=False)
+    stack = contextlib.AsyncExitStack()
+    await stack.enter_async_context(app.router.lifespan_context(app))
+    result = await jobs.run(container, "full_refresh", "full_refresh", pipeline.full_refresh, "test")
+    assert result["status"] == "succeeded", result
+    client = await stack.enter_async_context(httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test"))
+
+    @contextlib.asynccontextmanager
+    async def make_client(**overrides):
+        s2 = Settings(**{**base, **overrides})
+        c2 = build_container(s2)
+        app2 = create_app(s2, c2, run_startup_jobs=False)
+        async with app2.router.lifespan_context(app2):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app2), base_url="http://test") as cl:
+                yield cl, c2
+        await c2.close()
+
+    yield Demo(container, app, client, settings, result, make_client)
+    await stack.aclose()
+    await container.close()
+
+
+@pytest.fixture
+def broker_logged_in(mock_mcp):
+    from app.devtools.mock_mcp import STATE
+
+    STATE.kite_logged_in = True
+    yield
+    STATE.kite_logged_in = True

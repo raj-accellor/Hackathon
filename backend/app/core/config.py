@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     default_market_timezone: str = "Asia/Kolkata"
     scheduler_enabled: bool = True
+    # Local and test runs create tables from the models. Deployments set this false and run Alembic.
+    auto_create_schema: bool = True
+    auto_initial_refresh: bool = True
 
     # --- MCP connectors
     nse_bhavcopy_mcp_url: str | None = None

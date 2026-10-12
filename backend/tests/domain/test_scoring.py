@@ -158,3 +158,19 @@ def test_top_positive_and_negative_metrics_reported():
     assert len(r.top_positive) == 3 and len(r.top_negative) == 3
     assert r.top_positive[0]["score"] >= r.top_negative[0]["score"]
     assert r.version == s.VERSION
+
+
+def test_inapplicable_metrics_leave_the_denominator_and_do_not_reduce_coverage():
+    rows = _universe()
+    names = [m.name for m in s.DEFAULT_PROFILE["fundamentals"]]
+    not_for_banks = set(names[:5])  # five of eight fundamentals metrics do not apply to this instrument
+    for n in not_for_banks:
+        rows["I4"][n] = None
+    without = s.score_universe(rows)["I4"]
+    assert without.pillars["fundamentals"].sufficient is False, "treated as missing, coverage is 3 of 8"
+    res = s.score_universe(rows, inapplicable={"I4": not_for_banks})["I4"]
+    p = res.pillars["fundamentals"]
+    assert p.metrics_total == 3 and p.metrics_used == 3 and p.sufficient and res.complete
+    assert not (not_for_banks & set(res.missing_metrics))
+    assert res.completeness_pct == pytest.approx(100.0)
+    assert {d.name for d in p.metrics if d.peer_scope == "not_applicable"} == not_for_banks
