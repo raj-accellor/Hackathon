@@ -11,7 +11,7 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 | 2 | Foundation: structure, config, database, migration, health, logging, CI file | Done. Compose/PostgreSQL/Redis written, not run (no Docker here) |
 | 3 | Connectors, correlation, data quality | Done. NSE MCP verified live. Kite quotes/history not verified live (needs login) |
 | 4 | Deterministic metrics, scoring, screener | Done |
-| 5 | Themes, DSL, monthly snapshots | Done (71 built-in definitions, 5 flagged unavailable) |
+| 5 | Themes, DSL, monthly snapshots | Done (70 built-in definitions, 5 flagged unavailable) |
 | 6 | Sector rotation / RRG | Done |
 | 7 | LLM research, web evidence, concall analyzer | Done with mocked LLM/search; rule-based fallbacks verified. No real inference call made |
 | 8 | Frontend | Done (9 pages) |
@@ -20,7 +20,7 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 ## Test results (fresh run, 2026-10-12)
 
 - `cd backend && uv run pytest` → 258 passed
-- `uv run ruff check .` → clean; `uv run mypy app` → clean (26 lines carry a `type: ignore` for benign typing gaps)
+- `uv run ruff check .` → clean; `uv run mypy app` → clean (49 `type: ignore` comments cover typing gaps that were not resolved)
 - `uv run alembic upgrade head && uv run alembic check` on SQLite → applies, no drift
 - `cd frontend && npm run typecheck && npm test && npm run build` → clean, 14 passed, builds
 - `npm run e2e` from a clean database → 13 passed (12 desktop, 1 mobile)
