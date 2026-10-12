@@ -37,8 +37,30 @@ class Container:
     market_data: CorrelatedMarketData
     limiters: dict[str, SlidingWindowLimiter] = field(default_factory=dict)
     scheduler: Any = None
+    cache_note: str | None = None
+
+    async def check_cache(self) -> None:
+        """Confirm the configured cache answers. In local runs an unreachable Redis is replaced by
+        the in-process cache (single process only) and the fact is reported; elsewhere it stays an
+        error, because separate API and worker processes need a shared cache for job locks."""
+        from app.core.cache import MemoryCache
+
+        self.cache_note = None
+        try:
+            await self.cache.set("health:startup", 1, 5)
+        except Exception as e:
+            if self.settings.app_env in ("local", "test") and not isinstance(self.cache, MemoryCache):
+                self.cache_note = (f"REDIS_URL is set but Redis is unreachable ({type(e).__name__}); using the in-process cache. "
+                                   "Start Redis or clear REDIS_URL.")
+                try:
+                    await self.cache.close()
+                except Exception:  # noqa: S110 - the connection never opened
+                    pass
+                self.cache = MemoryCache()
+                self.market_data.cache = self.cache
 
     async def start(self) -> None:
+        await self.check_cache()
         await self.nse.start()
         await self.kite.start()
 
@@ -99,7 +121,9 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
     return Container(
         settings=s, engine=engine, sessions=make_sessionmaker(engine), cache=cache, clock=clock, nse=nse, kite=kite,
         kite_rest=kite_rest, fundamentals=FileFundamentalsProvider(fundamentals_dir, allow_demo=s.is_demo),
-        search=build_search(s.web_search_provider, _secret(s.web_search_api_key), s.web_search_timeout_seconds),
+        search=build_search(s.web_search_provider, _secret(s.web_search_api_key), s.web_search_timeout_seconds,
+                            disabled_reason="Web research is off in demo mode: demo symbols are fictional, so a real search "
+                                            "would return unrelated results." if s.is_demo else None),
         llm=HuggingFaceLLM(token=_secret(s.hf_token), model_id=s.hf_model_id, enabled=s.llm_enabled, endpoint_url=s.hf_endpoint_url,
                            router_url=s.hf_router_url, timeout=s.llm_timeout_seconds, max_retries=s.llm_max_retries,
                            max_output_tokens=s.llm_max_output_tokens, temperature=s.llm_temperature,

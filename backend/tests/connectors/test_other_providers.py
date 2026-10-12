@@ -16,7 +16,7 @@ from app.connectors.base import ProviderUnavailable
 from app.connectors.fundamentals_file import FileFundamentalsProvider, FundamentalsValidationError
 from app.connectors.kite_connect import KiteConnectProvider
 from app.connectors.llm import HuggingFaceLLM, LLMBudgetExceeded, LLMInvalidOutput, LLMUnavailable
-from app.connectors.web_search import BraveSearch, NullSearch, TavilySearch, build_search
+from app.connectors.web_search import BraveSearch, DdgsSearch, NullSearch, build_search
 from app.devtools import demo_data as dd
 
 # ------------------------------------------------------------ Kite Connect
@@ -145,25 +145,76 @@ async def test_no_search_provider_reports_unavailable():
     s = build_search("none", None)
     assert isinstance(s, NullSearch) and s.available is False
     assert await s.search("INFY results") == []
+    assert "WEB_SEARCH_PROVIDER" in s.status()["reason"]
 
 
-async def test_tavily_results_are_normalised_and_classified():
-    def h(req: httpx.Request) -> httpx.Response:
-        body = json.loads(req.content)
-        assert req.url.host == "api.tavily.com" and body["query"] == "INFY results"
-        assert req.headers["authorization"] == "Bearer k"
-        return httpx.Response(200, json={"results": [
-            {"title": "Outcome of Board Meeting", "url": "https://www.nseindia.com/x", "content": "<b>Board</b> approved results", "published_date": "2026-10-09"},
-            {"title": "Infosys Q2", "url": "https://news.example.com/a", "content": "Revenue grew", "published_date": None},
-            {"title": "bad", "url": "javascript:alert(1)", "content": "x"},
-            {"title": "internal", "url": "http://169.254.169.254/latest", "content": "x"}]})
+def test_ddgs_is_the_keyless_provider_and_tavily_is_gone():
+    assert isinstance(build_search("ddgs", None), DdgsSearch) and build_search("ddgs", None).available is True
+    assert isinstance(build_search("tavily", "k"), NullSearch), "Tavily is no longer supported"
+    assert isinstance(build_search("brave", None), NullSearch), "Brave still needs a key"
+    assert "not supported" in build_search("tavily", "k").status()["reason"]
+    from app.core.config import Settings
 
-    s = TavilySearch("k", transport=httpx.MockTransport(h))
-    out = await s.search("INFY results")
-    assert [r["url"] for r in out] == ["https://www.nseindia.com/x", "https://news.example.com/a"]
+    assert Settings(_env_file=None, web_search_provider="tavily").web_search_provider == "tavily", "a stale .env value must not stop start-up"
+    off = build_search("ddgs", None, disabled_reason="Demo symbols are fictional")
+    assert isinstance(off, NullSearch) and off.status()["reason"] == "Demo symbols are fictional"
+
+
+class FakeDDGS:
+    """Stands in for ddgs.DDGS; returns rows in the shape the real library returned on 2026-10-12."""
+
+    calls: list = []
+
+    def __init__(self, news=None, text=None, error=None):
+        self._news, self._text, self._error = news or [], text or [], error
+
+    def news(self, query, **kw):
+        FakeDDGS.calls.append(("news", query, kw))
+        if self._error:
+            raise self._error
+        return self._news
+
+    def text(self, query, **kw):
+        FakeDDGS.calls.append(("text", query, kw))
+        return self._text
+
+
+NEWS = [
+    {"date": "2026-10-08T10:03:36+00:00", "title": "Outcome of <b>Board</b> Meeting", "body": "Board approved results", "url": "https://www.nseindia.com/x", "image": "", "source": "NSE"},
+    {"date": "", "title": "Infosys Q2", "body": "Revenue grew", "url": "https://news.example.com/a", "source": "Example"},
+    {"date": "2026-10-01T00:00:00+00:00", "title": "bad", "body": "x", "url": "javascript:alert(1)"},
+    {"date": "2026-10-01T00:00:00+00:00", "title": "internal", "body": "x", "url": "http://169.254.169.254/latest"},
+]
+
+
+async def test_ddgs_news_results_are_normalised_and_classified():
+    FakeDDGS.calls = []
+    s = DdgsSearch(client_factory=lambda: FakeDDGS(news=NEWS))
+    out = await s.search("INFY results", max_results=5)
+    assert FakeDDGS.calls == [("news", "INFY results", {"max_results": 5, "region": "in-en"})], "text search is not needed when news returns rows"
+    assert [r["url"] for r in out] == ["https://www.nseindia.com/x", "https://news.example.com/a"], "unsafe and internal URLs are dropped"
     assert out[0]["source_type"] == "primary" and out[1]["source_type"] == "secondary"
-    assert out[0]["snippet"] == "Board approved results" and out[0]["published_at"] == "2026-10-09"
-    assert out[1]["published_at"] is None and out[0]["retrieved_at"] and out[0]["id"] == "S1"
+    assert out[0]["title"] == "Outcome of Board Meeting" and out[0]["snippet"] == "Board approved results"
+    assert out[0]["published_at"] == "2026-10-08T10:03:36+00:00" and out[1]["published_at"] is None
+    assert out[0]["id"] == "S1" and out[0]["provider"] == "ddgs" and out[0]["retrieved_at"]
+    assert s.status()["state"] == "ok" and s.status()["last_success_at"]
+
+
+async def test_ddgs_falls_back_to_text_search_when_news_is_empty():
+    FakeDDGS.calls = []
+    s = DdgsSearch(client_factory=lambda: FakeDDGS(text=[{"title": "Investors", "href": "https://www.infosys.com/investors.html", "body": "Financial results"}]))
+    out = await s.search("INFY results")
+    assert [c[0] for c in FakeDDGS.calls] == ["news", "text"]
+    assert out[0]["url"] == "https://www.infosys.com/investors.html" and out[0]["published_at"] is None
+
+
+async def test_ddgs_failure_raises_unavailable_not_empty_success():
+    from ddgs.exceptions import RatelimitException
+
+    s = DdgsSearch(client_factory=lambda: FakeDDGS(error=RatelimitException("202 Ratelimit")))
+    with pytest.raises(ProviderUnavailable) as e:
+        await s.search("x")
+    assert "rate limit" in str(e.value).lower() and s.status()["state"] == "degraded"
 
 
 async def test_search_failure_raises_unavailable_not_empty_success():
@@ -257,3 +308,30 @@ async def test_dedicated_endpoint_url_overrides_router():
     m = HuggingFaceLLM(token="t", model_id="m", enabled=True, endpoint_url="https://xyz.endpoints.huggingface.cloud", transport=httpx.MockTransport(h))
     await m.complete_validated("s", "u", Out)
     assert seen["url"] == "https://xyz.endpoints.huggingface.cloud/v1/chat/completions"
+
+
+@pytest.mark.parametrize("configured", ["https://router.huggingface.co/v1", "https://router.huggingface.co/v1/", "https://x.endpoints.huggingface.cloud",
+                                        "https://x.endpoints.huggingface.cloud/v1/chat/completions"])
+async def test_endpoint_url_is_normalised_whether_or_not_it_already_ends_in_v1(configured):
+    seen = {}
+
+    def h(req):
+        seen["url"] = str(req.url)
+        return _resp('{"answer": "a", "score": 1}')
+
+    m = HuggingFaceLLM(token="t", model_id="m", enabled=True, endpoint_url=configured, transport=httpx.MockTransport(h))
+    await m.complete_validated("s", "u", Out)
+    assert seen["url"].endswith("/v1/chat/completions") and "/v1/v1" not in seen["url"] and seen["url"].count("chat/completions") == 1
+
+
+async def test_unknown_model_id_reports_the_provider_message_and_suggests_available_ids():
+    def h(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "zai-org/GLM-5.3-Flash"}, {"id": "zai-org/GLM-5.3"}, {"id": "meta-llama/Llama-3.3-70B-Instruct"}]})
+        return httpx.Response(400, json={"error": {"message": "The requested model 'z-ai/glm-5.3-flash' does not exist.", "code": "model_not_found"}})
+
+    m = HuggingFaceLLM(token="hf_SECRET", model_id="z-ai/glm-5.3-flash", enabled=True, transport=httpx.MockTransport(h), max_retries=0)
+    v = await m.check_availability()
+    assert v["ok"] is False and "does not exist" in v["reason"]
+    assert v["suggestions"][0] == "zai-org/GLM-5.3-Flash" and "meta-llama/Llama-3.3-70B-Instruct" not in v["suggestions"]
+    assert "hf_SECRET" not in json.dumps(m.status())

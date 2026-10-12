@@ -324,7 +324,7 @@ async def test_research_degrades_honestly_without_llm_or_search(demo):
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["mode"] == "deterministic" and d["llm"]["available"] is False and "LLM_ENABLED" in d["llm"]["reason"]
-    assert d["web"]["available"] is False and "No web search provider" in d["web"]["reason"]
+    assert d["web"]["available"] is False and "off in demo mode" in d["web"]["reason"]
     rep = d["report"]
     assert rep["news"] == [] and rep["catalysts"] == []
     assert rep["pros"] and all(p["evidence"] and all(e in d["evidence"] for e in p["evidence"]) for p in rep["pros"])

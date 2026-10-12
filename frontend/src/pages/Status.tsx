@@ -146,6 +146,13 @@ export function Status() {
                       </tr>
                     </thead>
                     <tbody>
+                      {d.cache?.note && (
+                        <tr>
+                          <td colSpan={8}>
+                            <Notice tone="warn" title="Cache.">{d.cache.note}</Notice>
+                          </td>
+                        </tr>
+                      )}
                       {d.connectors.map((c: any) => (
                         <tr key={c.key}>
                           <td>
@@ -261,7 +268,7 @@ export function Status() {
                     </Kv>
                     <Kv k="Model id">{llm?.model_id ?? <Missing reason="HF_MODEL_ID is not set" />}</Kv>
                     <Kv k="Route">{llm?.base_url}</Kv>
-                    <Kv k="Verified against the account">{llm?.verified ? (llm.verified.ok ? `Yes, ${ago(llm.verified.checked_at)}` : `No: ${llm.verified.reason}`) : 'Not checked'}</Kv>
+                    <Kv k="Verified against the account">{llm?.verified ? (llm.verified.ok ? `Yes, ${ago(llm.verified.checked_at)}` : `No: ${llm.verified.reason}${llm.verified.suggestions?.length ? ` Similar ids on this route: ${llm.verified.suggestions.join(', ')}.` : ''}`) : 'Not checked'}</Kv>
                     <Kv k="Calls today (UTC)">
                       {llm?.usage.calls} of {llm?.usage.daily_budget}
                     </Kv>

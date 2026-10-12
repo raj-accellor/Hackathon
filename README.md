@@ -47,7 +47,9 @@ seconds). Demo mode runs the real connector code against local mock MCP servers 
      `docs/data-formats.md`). Until then fundamentals and valuation are shown as missing and scores
      are marked incomplete.
    - **Language model**: set `LLM_ENABLED=true`, `HF_TOKEN`, `HF_MODEL_ID`.
-   - **Web research**: set `WEB_SEARCH_PROVIDER` (`tavily` or `brave`) and `WEB_SEARCH_API_KEY`.
+   - **Web research**: on by default in live mode through `ddgs` (DuckDuckGo-backed, no API key).
+     Set `WEB_SEARCH_PROVIDER=brave` with `WEB_SEARCH_API_KEY` to use Brave instead, or `none` to turn
+     it off. It is always off in demo mode, because demo symbols are fictional.
    - **Kite Connect REST**: set `KITE_API_KEY` / `KITE_API_SECRET`.
 5. Edit `backend/data/reference/nse_universe.csv` to choose the instruments to track.
 
@@ -66,6 +68,7 @@ production or public use.
 | Task | Command |
 |---|---|
 | Start everything | `./scripts/dev.sh` |
+| Install backend with pip instead of uv | `cd backend && pip install -r requirements.txt` |
 | Backend tests | `cd backend && uv run pytest` |
 | Backend lint and types | `cd backend && uv run ruff check . && uv run mypy app` |
 | Create / apply migrations | `cd backend && uv run alembic revision --autogenerate -m "…"` / `uv run alembic upgrade head` |
@@ -94,13 +97,14 @@ docs/                    architecture, methodology, data formats, operations
 
 | Area | Status |
 |---|---|
-| Backend unit, contract, integration, security and scheduler tests | 258 passing (`uv run pytest`) |
+| Backend unit, contract, integration, security and scheduler tests | 270 passing (`uv run pytest`) |
 | Frontend component tests | 14 passing |
 | Browser end-to-end tests (demo stack, desktop and mobile) | 13 passing |
 | NSE MCP, real servers | Verified on 2026-10-12 with the application's connectors: tool discovery, quotes, paged history, index history, corporate actions, and a full pipeline run on 12 stocks |
 | Kite MCP, real server | Tool discovery, allowlist and instrument lookup verified. Quotes and history need an account login and were **not** verified against the real server; they are covered by mock contract tests only |
 | Kite Connect REST | Mocked contract tests only; needs a developer app |
-| Hugging Face LLM, web search | Mocked contract tests only; no credentials were available |
+| Web search (`ddgs`) | Verified with real searches on 2026-10-12; unit tests use a stand-in client |
+| Hugging Face LLM | Route, token and model id (`zai-org/GLM-5.3-Flash`) confirmed on 2026-10-12, but the account had no inference credits (HTTP 402), so no completion was produced. Behaviour with real model output is covered by mocked tests only |
 | Docker Compose, PostgreSQL, Redis | Written but **not run**: Docker was not available on the authoring machine. The Alembic migration was applied and checked on SQLite only |
 
 ## Known limitations

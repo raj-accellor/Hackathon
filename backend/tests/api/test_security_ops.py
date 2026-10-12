@@ -221,6 +221,7 @@ async def test_unconfigured_live_mode_reports_every_source_and_shows_no_data(tmp
             by = {x["key"]: x for x in st["connectors"]}
             assert by["nse_bhavcopy"]["state"] == "not_configured" and by["kite_mcp"]["state"] == "not_configured"
             assert st["is_demo"] is False and "not configured" in st["capabilities"]["nse_mcp"]["history"]["reason"]
+            assert by["web_search"]["name"] == "ddgs" and by["web_search"]["state"] == "ok", "live mode uses the keyless provider by default"
             ov = (await cl.get(API + "/overview")).json()
             assert ov["data_state"] == "missing" and ov["universe"]["instruments"] == 0 and ov["benchmark"] is None
             assert (await cl.get(API + "/screener")).json()["items"] == []
@@ -230,3 +231,35 @@ async def test_unconfigured_live_mode_reports_every_source_and_shows_no_data(tmp
             assert run["status"] == "succeeded" and run["detail"]["prices"]["bars"] == 0
             assert (await cl.get(API + "/instruments")).json()["total"] == 0
     await c.close()
+
+
+def test_env_example_as_shipped_gives_safe_working_defaults():
+    """`cp .env.example .env` must produce a runnable demo: blank values mean "not set"."""
+    from pathlib import Path
+
+    s = Settings(_env_file=Path(__file__).parents[3] / ".env.example")
+    assert s.api_auth_token is None, "a blank API_AUTH_TOKEN must not switch authentication on"
+    assert s.redis_url is None and s.hf_token is None and s.hf_endpoint_url is None and s.kite_api_key is None
+    assert s.web_search_api_key is None and s.hf_model_id is None
+    assert s.data_mode == "demo" and s.llm_enabled is False and s.web_search_provider == "ddgs"
+    assert s.rrg_refresh_cron == "0 */12 * * *" and s.theme_refresh_cron == "30 6 1 * *"
+
+
+async def test_blank_auth_token_does_not_lock_the_api(demo):
+    async with demo.make_client(api_auth_token="") as (cl, _c):
+        assert (await cl.get(API + "/instruments")).status_code == 200
+
+
+async def test_unreachable_redis_falls_back_locally_and_says_so(demo):
+    async with demo.make_client(redis_url="redis://127.0.0.1:6399/0") as (cl, c):
+        r = (await cl.get("/health/ready")).json()
+        assert r["status"] == "ready" and "in-process" in r["checks"]["cache"] and "Redis" in r["checks"]["cache"]
+        assert (await cl.get(API + "/overview")).status_code == 200
+        ran = await jobs.run(c, "alerts", "alerts-fallback-test", pipeline.alerts_job, "test")
+        assert ran["status"] == "succeeded", "job locks work on the fallback cache"
+
+
+async def test_unreachable_redis_is_fatal_to_readiness_outside_local(demo):
+    async with demo.make_client(redis_url="redis://127.0.0.1:6399/0", app_env="production") as (cl, _c):
+        r = await cl.get("/health/ready")
+        assert r.status_code == 503 and r.json()["checks"]["cache"].startswith("error")

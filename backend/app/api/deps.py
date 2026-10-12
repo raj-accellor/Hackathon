@@ -39,7 +39,7 @@ def get_actor(request: Request, c: Ctx) -> str:
     """Single-tenant bearer-token check. When API_AUTH_TOKEN is unset (local development) every
     caller is the local user; when set, every /api/v1 request must present it."""
     token = c.settings.api_auth_token
-    if token is None:
+    if token is None or not token.get_secret_value():
         return "local"
     header = request.headers.get("authorization", "")
     supplied = header[7:] if header.lower().startswith("bearer ") else ""

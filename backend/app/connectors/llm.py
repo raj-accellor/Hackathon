@@ -62,14 +62,20 @@ class HuggingFaceLLM:
                  max_output_tokens: int = 2000, temperature: float = 0.1, daily_budget: int = 200,
                  daily_token_budget: int = 2_000_000, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._token, self.model_id, self.enabled = token, model_id, enabled
-        base = (endpoint_url.rstrip("/") + "/v1") if endpoint_url else router_url.rstrip("/")
-        self.base_url = base
+        self.base_url = self._normalise(endpoint_url or router_url)
         self.max_retries, self.max_output_tokens, self.temperature = max_retries, max_output_tokens, temperature
         self.daily_budget, self.daily_token_budget = daily_budget, daily_token_budget
         self._http = httpx.AsyncClient(timeout=timeout, transport=transport)
         self._day = datetime.now(UTC).date()
         self._usage: dict[str, Any] = self._zero()
         self._verified: dict[str, Any] | None = None
+
+    @staticmethod
+    def _normalise(url: str) -> str:
+        """Accept a base with or without `/v1`, or a full chat-completions URL; return `<base>/v1`."""
+        u = url.strip().rstrip("/")
+        u = re.sub(r"/chat/completions$", "", u)
+        return u if u.endswith("/v1") else u + "/v1"
 
     def __repr__(self) -> str:
         return f"HuggingFaceLLM(model_id={self.model_id!r}, available={self.available})"
@@ -117,8 +123,24 @@ class HuggingFaceLLM:
             await self._chat([{"role": "user", "content": "Reply with the single word OK."}], None, max_tokens=5)
             self._verified = {"ok": True, "checked_at": datetime.now(UTC).isoformat()}
         except LLMError as e:
-            self._verified = {"ok": False, "reason": str(e), "checked_at": datetime.now(UTC).isoformat()}
+            self._verified = {"ok": False, "reason": str(e), "checked_at": datetime.now(UTC).isoformat(),
+                              "suggestions": await self._similar_models()}
         return self._verified
+
+    async def _similar_models(self) -> list[str]:
+        """Model ids the route offers that resemble the configured one (helps with a mistyped id)."""
+        import difflib
+
+        try:
+            r = await self._http.get(f"{self.base_url}/models", headers={"Authorization": f"Bearer {self._token}"})
+            ids = [m["id"] for m in r.json().get("data", []) if isinstance(m, dict) and "id" in m] if r.status_code == 200 else []
+        except (httpx.HTTPError, ValueError):
+            return []
+        want = (self.model_id or "").lower()
+        key = lambda s: re.sub(r"[^a-z0-9.]", "", s.split("/")[-1].lower())  # noqa: E731
+        by_key = {i: key(i) for i in ids}
+        close = difflib.get_close_matches(key(want), list(by_key.values()), n=5, cutoff=0.6)
+        return [i for c in close for i, k in by_key.items() if k == c][:5]
 
     async def _chat(self, messages: list[dict[str, str]], response_format: dict[str, Any] | None, max_tokens: int | None = None) -> str:
         if not self.available:
@@ -147,7 +169,16 @@ class HuggingFaceLLM:
                 self._err(last)
                 continue
             if r.status_code != 200:
-                e2 = LLMUnavailable(f"LLM provider rejected the request (HTTP {r.status_code}); check HF_TOKEN, HF_MODEL_ID and the route")
+                detail = ""
+                try:
+                    err = r.json().get("error")
+                    detail = str((err.get("message") if isinstance(err, dict) else err) or "")[:200]
+                except (ValueError, AttributeError):
+                    pass
+                if self._token:
+                    detail = detail.replace(self._token, "[REDACTED]")
+                e2 = LLMUnavailable(f"LLM provider rejected the request (HTTP {r.status_code})" + (f": {detail}" if detail else "")
+                                    + ". Check HF_TOKEN, HF_MODEL_ID and the route.")
                 self._err(e2)
                 raise e2
             data = r.json()

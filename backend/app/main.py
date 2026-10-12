@@ -152,13 +152,13 @@ def create_app(settings: Settings | None = None, container: Container | None = N
             checks["database"] = f"error: {type(e).__name__}"
         try:
             await c.cache.set("health:ping", 1, 5)
-            checks["cache"] = "ok"
+            checks["cache"] = f"ok (in-process fallback: {c.cache_note})" if c.cache_note else "ok"
         except Exception as e:
             checks["cache"] = f"error: {type(e).__name__}"
         # Upstream data sources are reported but do not fail readiness: the API still serves stored data.
         checks["sources"] = {"nse_bhavcopy": c.nse.health()["nse_bhavcopy"]["state"], "nse_cm_market": c.nse.health()["nse_cm_market"]["state"],
                              "kite_mcp": c.kite.health()["state"]}
-        ok = checks["database"] == "ok" and checks["cache"] == "ok"
+        ok = checks["database"] == "ok" and checks["cache"].startswith("ok")
         return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks, "data_mode": c.settings.data_mode},
                             status_code=200 if ok else 503)
 

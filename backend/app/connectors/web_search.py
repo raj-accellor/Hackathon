@@ -1,6 +1,7 @@
 """Web search provider abstraction.
 
-Only the configured search API host is ever contacted; result pages are not fetched, which keeps
+Providers: `ddgs` (DuckDuckGo-backed metasearch through the `ddgs` library, no API key) and `brave`
+(keyed API). Only the search provider is contacted; result pages are not fetched, which keeps
 server-side request forgery out of scope. Result URLs are validated before they are stored or
 shown, and snippets are reduced to plain text. With no provider configured, web research is
 reported as unavailable; nothing is "searched" from model memory.
@@ -8,9 +9,11 @@ reported as unavailable; nothing is "searched" from model memory.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import ipaddress
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -71,11 +74,61 @@ class NullSearch:
     name = "none"
     available = False
 
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason or "WEB_SEARCH_PROVIDER is 'none'; web research is unavailable"
+
     def status(self) -> dict[str, Any]:
-        return {"name": self.name, "state": "not_configured", "reason": "WEB_SEARCH_PROVIDER is 'none'; web research is unavailable"}
+        return {"name": self.name, "state": "not_configured", "reason": self.reason}
 
     async def search(self, query: str, max_results: int = 8) -> list[dict[str, Any]]:
         return []
+
+
+class DdgsSearch:
+    """Keyless search through the `ddgs` library. News results are preferred because they carry a
+    publication date; general web results are the fallback. The library is synchronous, so calls
+    run in a worker thread with an overall deadline. It relies on public search endpoints that
+    rate-limit and can change, so failures are reported as unavailable, never as "no news"."""
+
+    name = "ddgs"
+    available = True
+
+    def __init__(self, timeout: float = 15.0, region: str = "in-en", client_factory: Callable[[], Any] | None = None) -> None:
+        self.timeout, self.region = timeout, region
+        self._factory = client_factory or self._default_client
+        self._last_error: str | None = None
+        self._last_success: str | None = None
+
+    def _default_client(self) -> Any:
+        from ddgs import DDGS
+
+        return DDGS(timeout=int(self.timeout))
+
+    def status(self) -> dict[str, Any]:
+        return {"name": self.name, "state": "degraded" if self._last_error else "ok", "last_success_at": self._last_success,
+                "last_error": self._last_error, "note": "Keyless DuckDuckGo-backed search; subject to rate limits."}
+
+    def _run(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        client = self._factory()
+        rows = client.news(query, max_results=max_results, region=self.region) or []
+        items = [{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("body"), "published": r.get("date") or None} for r in rows]
+        if not items:
+            rows = client.text(query, max_results=max_results, region=self.region) or []
+            items = [{"title": r.get("title"), "url": r.get("href") or r.get("url"), "snippet": r.get("body"), "published": None} for r in rows]
+        return items
+
+    async def search(self, query: str, max_results: int = 8) -> list[dict[str, Any]]:
+        try:
+            items = await asyncio.wait_for(asyncio.to_thread(self._run, query[:400], max_results), timeout=self.timeout * 2 + 5)
+        except TimeoutError as e:
+            self._last_error = "timeout"
+            raise ProviderUnavailable("web search timed out", "unavailable", self.name) from e
+        except Exception as e:  # the library raises its own exception types for rate limits and upstream errors
+            kind = type(e).__name__
+            self._last_error = "rate limit reached" if "Ratelimit" in kind else kind
+            raise ProviderUnavailable(f"web search unavailable: {self._last_error}", "unavailable", self.name) from e
+        self._last_error, self._last_success = None, datetime.now(UTC).isoformat()
+        return normalise(items, self.name)
 
 
 class _HttpSearch:
@@ -108,17 +161,6 @@ class _HttpSearch:
         return r.json()
 
 
-class TavilySearch(_HttpSearch):
-    name = "tavily"
-
-    async def search(self, query: str, max_results: int = 8) -> list[dict[str, Any]]:
-        req = self._http.build_request("POST", "https://api.tavily.com/search", headers={"Authorization": f"Bearer {self._key}"},
-                                       json={"query": query[:400], "max_results": max_results, "topic": "news", "search_depth": "basic"})
-        data = await self._send(req)
-        return normalise([{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("content"), "published": r.get("published_date")}
-                          for r in data.get("results", [])], self.name)
-
-
 class BraveSearch(_HttpSearch):
     name = "brave"
 
@@ -131,9 +173,16 @@ class BraveSearch(_HttpSearch):
                            "published": r.get("page_age") or r.get("age")} for r in data.get("results", [])], self.name)
 
 
-def build_search(provider: str, api_key: str | None, timeout: float = 15.0) -> NullSearch | TavilySearch | BraveSearch:
-    if provider == "tavily" and api_key:
-        return TavilySearch(api_key, timeout)
+def build_search(provider: str, api_key: str | None, timeout: float = 15.0,
+                 disabled_reason: str | None = None) -> NullSearch | DdgsSearch | BraveSearch:
+    if disabled_reason:
+        return NullSearch(disabled_reason)
+    if provider == "ddgs":
+        return DdgsSearch(timeout)
     if provider == "brave" and api_key:
         return BraveSearch(api_key, timeout)
+    if provider == "brave":
+        return NullSearch("WEB_SEARCH_PROVIDER is 'brave' but WEB_SEARCH_API_KEY is not set")
+    if provider not in ("none", ""):
+        return NullSearch(f"WEB_SEARCH_PROVIDER '{provider}' is not supported; use 'ddgs', 'brave' or 'none'")
     return NullSearch()

@@ -17,14 +17,13 @@ os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
 
 def _free_base_port() -> int:
-    for _ in range(50):
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        if port > 60000:
-            continue
+    """Three consecutive free ports, chosen below the OS ephemeral range."""
+    import random
+
+    for _ in range(200):
+        port = random.randint(20000, 45000)
         try:
-            for off in (1, 2):
+            for off in (0, 1, 2):
                 with socket.socket() as t:
                     t.bind(("127.0.0.1", port + off))
             return port

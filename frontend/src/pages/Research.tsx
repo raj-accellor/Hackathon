@@ -129,7 +129,7 @@ function Board({ d, onRegenerate, busy }: { d: any; onRegenerate: () => void; bu
         ))}
       </div>
       <div className="grid gap-4 lg:grid-cols-2">
-        <List title="Events and news" items={r.news} evidence={ev} interpreted={interpreted} empty={d.web.available ? 'The search returned nothing relevant.' : 'No web search provider is configured, so nothing was retrieved.'} />
+        <List title="Events and news" items={r.news} evidence={ev} interpreted={interpreted} empty={d.web.available ? 'The search returned nothing relevant.' : 'Web research was unavailable, so nothing was retrieved.'} />
         <List title="Catalysts" items={r.catalysts} evidence={ev} interpreted={interpreted} empty="None identified from retrieved sources." />
       </div>
       <div className="grid gap-4 lg:grid-cols-2">

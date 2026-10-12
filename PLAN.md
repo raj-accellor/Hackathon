@@ -19,7 +19,7 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 
 ## Test results (fresh run, 2026-10-12)
 
-- `cd backend && uv run pytest` → 258 passed
+- `cd backend && uv run pytest` → 270 passed
 - `uv run ruff check .` → clean; `uv run mypy app` → clean (49 `type: ignore` comments cover typing gaps that were not resolved)
 - `uv run alembic upgrade head && uv run alembic check` on SQLite → applies, no drift
 - `cd frontend && npm run typecheck && npm test && npm run build` → clean, 14 passed, builds
@@ -51,7 +51,9 @@ index quotes from NSE, Kite lookup by exact `id`. Recorded schemas live in
 ## Not verified
 
 - Kite MCP quotes and history against the real server (needs the account holder's login).
-- Kite Connect REST, Hugging Face inference, Tavily/Brave search (no credentials).
+- Kite Connect REST and Brave search (no credentials). Web search through `ddgs` is verified.
+- Hugging Face GLM output: the token, route and model id `zai-org/GLM-5.3-Flash` are confirmed, but the
+  account returned HTTP 402 (no inference credits), so no real completion has been seen.
 - Docker Compose, PostgreSQL, Redis, nginx config (Docker not installed). The migration has only
   been applied to SQLite.
 - CI workflow (never executed on a runner).

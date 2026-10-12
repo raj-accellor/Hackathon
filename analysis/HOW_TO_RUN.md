@@ -33,6 +33,18 @@ Data is stored in `backend/var/app.db` (SQLite). Uploaded statement files go to
 
 uv downloads the right Python (3.12+) by itself. Docker is **not** needed for local runs.
 
+Dependencies are declared in `backend/pyproject.toml` and pinned in `backend/uv.lock` (backend) and
+in `frontend/package.json` / `package-lock.json` (frontend). `backend/requirements.txt` and
+`backend/requirements-dev.txt` are exported from the lockfile for use with plain `pip`:
+
+```bash
+cd backend && python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt     # or requirements.txt for runtime only
+uvicorn app.main:app --port 8000        # instead of `uv run uvicorn ...`
+```
+
+After changing dependencies in `pyproject.toml`, regenerate them with `./scripts/export-requirements.sh`.
+
 One-time install of dependencies:
 
 ```bash
@@ -160,7 +172,7 @@ The app works without the Kite login: it runs on NSE data alone and marks the br
 | Financial statements | Fundamentals and valuation are "Not available"; scores are marked incomplete or "Insufficient data" |
 | Kite login | Broker shown as "login required"; no gap filling or cross-checking |
 | Language model | Research and concall analysis use rule-based fallbacks and say so |
-| Web search | News and catalysts are empty, with a notice that web research is unavailable |
+| Web search switched off or rate-limited | News and catalysts are empty, with a notice that web research is unavailable |
 
 ---
 
@@ -186,19 +198,29 @@ automatically.
 ```bash
 LLM_ENABLED=true
 HF_TOKEN=<your token>
-HF_MODEL_ID=<exact model id available to your account>
+HF_MODEL_ID=zai-org/GLM-5.3-Flash     # the exact id the Hugging Face router lists
 # HF_ENDPOINT_URL=<only if you use a dedicated Inference Endpoint>
 ```
 
 After restarting, Data status → Language model shows whether the model id was verified against
-your account. `LLM_DAILY_BUDGET` caps calls per day.
+your account, the provider's own error if not, and similar ids if the id looks mistyped.
+`LLM_DAILY_BUDGET` caps calls per day.
+
+The Hugging Face account needs Inference Providers credits. Without them the provider answers
+HTTP 402 ("no remaining credits") and the app falls back to rule-based summaries, saying so.
 
 ### Web research
 
+On by default in live mode through `ddgs` (DuckDuckGo-backed search, no API key needed):
+
 ```bash
-WEB_SEARCH_PROVIDER=tavily      # or brave
-WEB_SEARCH_API_KEY=<your key>
+WEB_SEARCH_PROVIDER=ddgs        # default; use `none` to turn web research off
+# WEB_SEARCH_PROVIDER=brave     # alternative, needs WEB_SEARCH_API_KEY
 ```
+
+It is always off in demo mode, because demo symbols are fictional. `ddgs` uses public search
+endpoints that rate-limit; when a search fails the research board says web research was
+unavailable rather than showing no news.
 
 ### Kite Connect v3 REST (second broker path)
 
@@ -360,7 +382,9 @@ Expect to fix small issues the first time.
 | Scores say "Insufficient data" in live mode | No financial statements uploaded, or less history than a metric needs. The page states which pillars lack data |
 | 12-month return or 1-year volatility missing | Fewer than 253 daily bars. Use `HISTORY_YEARS=2` or more and run a refresh |
 | "Too many refresh requests" | Rate limit. Wait the number of seconds shown |
-| Research says the language model was not used | `LLM_ENABLED`, `HF_TOKEN` or `HF_MODEL_ID` not set, or the daily budget was reached. Data status shows which |
+| Research says the language model was not used | `LLM_ENABLED`, `HF_TOKEN` or `HF_MODEL_ID` not set, a wrong model id, no Hugging Face credits (HTTP 402), or the daily budget was reached. The notice and Data status show which |
+| Every API call returns 401 | `API_AUTH_TOKEN` is set in `.env`. Enter the same value under Data status → Access, or clear it |
+| Data status shows a cache warning about Redis | `REDIS_URL` is set but Redis is not running. Local runs fall back to the in-process cache; start Redis or clear `REDIS_URL` |
 | A sector is missing from the rotation graph | Its index has no history and fewer than three of its stocks are tracked. The page lists the reason |
 | Want to start completely fresh | `rm -rf backend/var` then `./scripts/dev.sh` |
 

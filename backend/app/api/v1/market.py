@@ -83,6 +83,7 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
         "terms": ["NSE states its MCP data is delayed and for informational and educational use; it is not licensed for commercial "
                   "deployment or AI model training. Confirm NSE, broker and search-provider terms before any production use.",
                   "Bhavcopy prices are unadjusted; this system back-adjusts for splits and bonuses reported by the corporate-actions tool."],
+        "cache": {"backend": type(c.cache).__name__, "note": c.cache_note},
         "scheduler": {"enabled": c.settings.scheduler_enabled, "jobs": c.scheduler.describe() if c.scheduler else []},
     }
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -67,7 +67,9 @@ class Settings(BaseSettings):
     llm_daily_token_budget: int = 2_000_000
 
     # --- Web research
-    web_search_provider: Literal["none", "tavily", "brave"] = "none"
+    # ddgs needs no key. In demo mode web research is switched off: demo symbols are fictional.
+    # An unsupported value does not stop start-up; web research is then reported as unavailable.
+    web_search_provider: str = "ddgs"
     web_search_api_key: SecretStr | None = None
     web_search_max_results: int = 8
     web_search_timeout_seconds: float = 15.0
@@ -96,6 +98,16 @@ class Settings(BaseSettings):
 
     mock_mcp_host: str = "127.0.0.1"
     mock_mcp_port: int = Field(default=9100, description="Base port of the local mock MCP servers used in demo mode")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_means_unset(cls, data: Any) -> Any:
+        """`KEY=` in a .env file means "not set". Without this a blank API_AUTH_TOKEN would switch
+        authentication on with an empty token, and a blank URL would count as configured."""
+        if isinstance(data, dict):
+            optional = {n for n, f in cls.model_fields.items() if f.default is None}
+            return {k: (None if k in optional and isinstance(v, str) and not v.strip() else v) for k, v in data.items()}
+        return data
 
     @property
     def is_demo(self) -> bool:

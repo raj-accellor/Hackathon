@@ -256,7 +256,7 @@ async def generate(c: Container, s: AsyncSession, inst: Instrument) -> dict[str,
         except ProviderUnavailable as e:
             web.update(available=False, reason=str(e))
     else:
-        web["reason"] = "No web search provider is configured, so no news or filings were retrieved."
+        web["reason"] = c.search.status().get("reason") or "No web search provider is configured."
     evidence = build_evidence(inst, snap, quote, sources)
     mode, llm_info, grounding = "deterministic", {"available": c.llm.available, "model_id": c.llm.model_id, "reason": None}, None
     report: dict[str, Any] | None = None
