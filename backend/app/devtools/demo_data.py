@@ -170,7 +170,9 @@ def fundamentals(symbol: str) -> dict:
     rng = np.random.default_rng(_seed(symbol + "fund"))
     rev = float(rng.uniform(1500, 40000))
     growth, margin = rng.normal(0.11, 0.07), float(rng.uniform(0.10, 0.32))
-    shares = float(rng.uniform(8, 120))
+    # Share count chosen so the synthetic price implies a plausible earnings multiple.
+    base_price = 150 + (_seed(symbol + "px") % 2400)
+    shares = float(rev * (1 + growth) ** 5 * margin * 0.55 * rng.uniform(14, 42) / (base_price * 1.3))
     equity, debt = rev * rng.uniform(0.35, 0.9), rev * rng.uniform(0.0, 0.45)
     periods = []
     for year in range(2022, 2027):
