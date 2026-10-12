@@ -90,12 +90,14 @@ class CorrelatedMarketData:
 
         async def one(p: Any) -> BarsResult | BaseException:
             try:
+                if p is self.nse:
+                    return await p.get_history(symbol, start, end, instrument_type)
                 return await p.get_history(symbol, start, end)
             except Exception as e:
                 return e
 
         async def acts() -> list[CorporateAction] | BaseException:
-            if self.nse is None or self.nse not in providers:
+            if self.nse is None or self.nse not in providers or instrument_type == "INDEX":
                 return []
             try:
                 return await self.nse.get_corporate_actions(symbol)
@@ -110,7 +112,7 @@ class CorrelatedMarketData:
             warnings.append(f"Corporate actions unavailable ({st.reason}); NSE prices could not be split-adjusted.")
         else:
             actions = act_res
-            if self.nse is not None and self.nse in providers:
+            if self.nse is not None and self.nse in providers and instrument_type != "INDEX":
                 sources.append(SourceStatus("nse_mcp", "corporate_actions", "ok", rows=len(actions), source_id="get_corporate_actions"))
 
         for p, res in zip(providers, results, strict=True):
@@ -153,10 +155,12 @@ class CorrelatedMarketData:
         points: dict[str, list[DataPoint]] = {}
 
         async def from_nse() -> QuoteResult | BaseException | None:
-            if self.nse is None or instrument_type == "INDEX":
+            if self.nse is None:
+                return None
+            if instrument_type == "INDEX" and not self.nse.capabilities().get("index_quote", {}).get("supported"):
                 return None
             try:
-                return await self.nse.get_quote(sym)
+                return await self.nse.get_quote(symbol if instrument_type == "INDEX" else sym, instrument_type)
             except Exception as e:
                 return e
 
@@ -186,7 +190,7 @@ class CorrelatedMarketData:
         conflicts = []
         for f, pts in points.items():
             rec = reconcile.reconcile(f, pts, self.precedence)
-            dp = rec.point
+            dp = rec.point  # type: ignore[assignment]
             fields[f] = {
                 "value": rec.value, "provider": rec.provider, "status": (dp.status if dp and rec.status == "ok" else rec.status),
                 "reason": (dp.reason if dp else rec.reason), "as_of": dp.as_of.isoformat() if dp and dp.as_of else None,

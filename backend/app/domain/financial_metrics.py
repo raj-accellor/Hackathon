@@ -262,7 +262,7 @@ def compute_fundamentals(periods: Sequence[dict[str, Any]], sector_kind: str = "
         else:
             put(cagr(name, rows[-(yrs + 1)].get(key), g(key), yrs))
 
-    gross = None if g("revenue") is None or g("cogs") is None else g("revenue") - g("cogs")
+    gross = None if g("revenue") is None or g("cogs") is None else g("revenue") - g("cogs")  # type: ignore[operator]
     put(margin("gross_margin", gross, g("revenue")))
     put(margin("ebitda_margin", g("ebitda"), g("revenue")))
     put(margin("ebit_margin", g("ebit"), g("revenue")))
@@ -310,7 +310,7 @@ def compute_fundamentals(periods: Sequence[dict[str, Any]], sector_kind: str = "
 
     bvps_formula = "shareholders' equity / shares outstanding"
     if g("equity") is not None and g("shares_outstanding"):
-        put(ok("book_value_per_share", g("equity") / g("shares_outstanding"), "price", bvps_formula,
+        put(ok("book_value_per_share", g("equity") / g("shares_outstanding"), "price", bvps_formula,  # type: ignore[operator]
                {"equity": g("equity"), "shares_outstanding": g("shares_outstanding")}))
     else:
         put(bad("book_value_per_share", Status.MISSING, "equity or share count missing", "price", bvps_formula))

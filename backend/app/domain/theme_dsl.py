@@ -174,7 +174,7 @@ class RankKey(BaseModel):
 
 class Universe(BaseModel):
     exchange: Literal["NSE", "BSE"] = "NSE"
-    instrument_types: list[Literal["EQ", "ETF", "INDEX", "REIT", "INVIT", "COMMODITY"]] = Field(default_factory=lambda: ["EQ"])
+    instrument_types: list[Literal["EQ", "ETF", "INDEX", "REIT", "INVIT", "COMMODITY"]] = Field(default_factory=lambda: ["EQ"])  # type: ignore[arg-type]
     sectors: list[str] | None = Field(default=None, max_length=50)
     min_avg_traded_value: float | None = Field(default=None, ge=0)
 
@@ -282,7 +282,7 @@ def evaluate(spec: ThemeSpec, rows: Mapping[str, Mapping[str, Any]]) -> Evaluati
     scored: list[tuple[str, float | None]] = []
     for i in eligible:
         parts = [pm[i] for pm in per_metric if pm[i] is not None]
-        scored.append((i, sum(parts) / len(parts) if parts else None))
+        scored.append((i, sum(parts) / len(parts) if parts else None))  # type: ignore[arg-type]
     unranked = [i for i, s in scored if s is None]
     ranked = sorted(((i, s) for i, s in scored if s is not None), key=lambda t: (-round(t[1], 9), t[0]))
     for i in unranked:

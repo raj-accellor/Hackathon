@@ -161,6 +161,8 @@ def validate_grounding(r: LLMReport, evidence: dict[str, Any]) -> tuple[dict[str
 
 
 def _fmt(item: dict[str, Any]) -> str:
+    if str(item.get("label", "")).startswith("Avg traded value"):
+        return f"INR {item['value'] / 1e7:,.1f} crore a day"
     unit = {"pct": "%", "x": "x"}.get(item.get("unit") or "", "")
     return f"{item['value']:,.2f}{unit}" if item.get("unit") != "score" else f"{item['value']:.0f}"
 

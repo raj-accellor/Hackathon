@@ -112,7 +112,7 @@ async def _write_history(c: Container, s: AsyncSession, inst: Instrument, b: His
         if bar is None:
             bar = PriceBar(instrument_id=inst.id, date=d, close=_dec(r["close"]))
             s.add(bar)
-        bar.open, bar.high, bar.low, bar.close = _dec(r.get("open")), _dec(r.get("high")), _dec(r.get("low")), _dec(r["close"])
+        bar.open, bar.high, bar.low, bar.close = _dec(r.get("open")), _dec(r.get("high")), _dec(r.get("low")), _dec(r["close"])  # type: ignore[assignment]
         bar.volume, bar.traded_value = _dec(r.get("volume"), 2), _dec(r.get("traded_value"), 2)
         bar.provider, bar.adjustment = r["provider"], adj.get(r["provider"]) or "unadjusted"
         bar.retrieved_at, bar.is_demo = now, b.is_demo
@@ -128,7 +128,7 @@ async def _write_history(c: Container, s: AsyncSession, inst: Instrument, b: His
         if row is None:
             row = SourceConflict(instrument_id=inst.id, field=cf["field"], obs_date=k[1], values={}, diff_pct=0, tolerance_pct=0, chosen="")
             s.add(row)
-        row.values, row.diff_pct, row.tolerance_pct = cf["values"], _dec(cf["diff_pct"]), _dec(cf["tolerance_pct"])
+        row.values, row.diff_pct, row.tolerance_pct = cf["values"], _dec(cf["diff_pct"]), _dec(cf["tolerance_pct"])  # type: ignore[assignment]
         row.chosen, row.detected_at = cf["chosen"], now
     await _record_sources(s, inst.id, b.sources, {"coverage": b.coverage, "warnings": b.warnings[:20]})
     return len(b.frame)
@@ -142,7 +142,7 @@ async def ingest_prices(c: Container, s: AsyncSession, symbols: list[str] | None
     today = c.clock.now().date()
     last = dict((await s.execute(select(PriceBar.instrument_id, func.max(PriceBar.date)).group_by(PriceBar.instrument_id))).all())
     n_actions = dict((await s.execute(select(CorporateActionRow.instrument_id, func.count()).group_by(CorporateActionRow.instrument_id))).all())
-    full_start = today - timedelta(days=int(365.25 * c.settings.history_years) + 10)
+    full_start = today - timedelta(days=int(365.25 * c.settings.history_years) + 21)  # margin so N-year windows have enough bars
     sem = asyncio.Semaphore(c.settings.ingest_max_concurrency)
 
     async def fetch(inst: Instrument) -> tuple[Instrument, HistoryBundle | DataUnavailable, bool]:
@@ -220,6 +220,8 @@ async def resolve_broker_identifiers(c: Container, s: AsyncSession) -> int:
         if not info or any(i.provider == "kite_mcp" for i in inst.identifiers):
             continue
         inst.identifiers.append(InstrumentIdentifier(provider="kite_mcp", kind="instrument_token", value=str(info.get("instrument_token"))))
+        if info.get("isin") and not inst.isin:
+            inst.isin = str(info["isin"])[:12]
         if info.get("lot_size") is not None:
             inst.lot_size = int(float(info["lot_size"]))
         n += 1

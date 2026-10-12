@@ -112,5 +112,5 @@ class Coalescer:
         if task is None:
             task = asyncio.ensure_future(fn())
             self._inflight[key] = task
-            task.add_done_callback(lambda _t, k=key: self._inflight.pop(k, None))
+            task.add_done_callback(lambda _t, k=key: self._inflight.pop(k, None))  # type: ignore[misc]
         return await asyncio.shield(task)

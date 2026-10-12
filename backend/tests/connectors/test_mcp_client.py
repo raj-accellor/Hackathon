@@ -10,7 +10,7 @@ from app.connectors.binding import BindError, bind_args
 from app.connectors.kite_mcp import ALLOWED_TOOLS
 from app.core.resilience import FakeClock
 
-FIXTURE = Path(__file__).parents[1] / "fixtures" / "kite_mcp_tools_2026-10-12.json"
+FIXTURE = Path(__file__).parents[1] / "fixtures" / "live" / "kite_mcp_tools_2026-10-12.json"
 
 
 def client(url, **kw):

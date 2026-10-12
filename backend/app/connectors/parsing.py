@@ -21,7 +21,7 @@ BAR_KEYS: dict[str, tuple[str, ...]] = {
     "high": ("high", "highprice", "hghpric", "chtradehighprice", "dayhigh"),
     "low": ("low", "lowprice", "lwpric", "chtradelowprice", "daylow"),
     "close": ("close", "closeprice", "clspric", "chclosingprice", "lastclose"),
-    "prev_close": ("prevclose", "previousclose", "prvsclsgpric", "chpreviousclsprice", "prevcloseprice"),
+    "prev_close": ("prevclose", "previousclose", "precloseprice", "prvsclsgpric", "chpreviousclsprice", "prevcloseprice"),
     "volume": ("volume", "totaltradedquantity", "tottrdqty", "ttltradgvol", "tradedqty", "totaltradedvolume", "chtottradedqty", "qty"),
     "traded_value": ("tradedvalue", "turnover", "tottrdval", "ttltrfval", "totaltradedvalue", "chtottradedval", "value"),
 }
@@ -29,10 +29,10 @@ QUOTE_KEYS: dict[str, tuple[str, ...]] = {
     "last_price": ("lastprice", "ltp", "last", "lasttradedprice"),
     "open": BAR_KEYS["open"], "high": BAR_KEYS["high"], "low": BAR_KEYS["low"],
     "prev_close": BAR_KEYS["prev_close"],
-    "volume": BAR_KEYS["volume"], "traded_value": BAR_KEYS["traded_value"],
-    "change_pct": ("pchange", "changepct", "percentchange", "perchange", "changepercent"),
+    "volume": BAR_KEYS["volume"],
+    "change_pct": ("pchange", "changepct", "percentchange", "perchange", "percchange", "changepercent"),
 }
-QUOTE_TIME_KEYS = ("lastupdatetime", "timestamp", "lasttradetime", "asof", "updatedat", "time")
+QUOTE_TIME_KEYS = ("latesttimestamp", "lastupdatetime", "nsetimestamp", "timeval", "timestamp", "lasttradetime", "asof", "updatedat", "time")
 _ROW_CONTAINERS = ("data", "rows", "history", "records", "candles", "result", "results", "items", "stocks")
 
 
@@ -75,7 +75,7 @@ def parse_datetime(v: Any) -> datetime | None:
     if v is None:
         return None
     try:
-        ts = pd.Timestamp(str(v))
+        ts = pd.Timestamp(str(v)).floor("s")
     except (ValueError, TypeError):
         return None
     if ts is pd.NaT:
@@ -129,3 +129,23 @@ def bars_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(recs).drop_duplicates("date", keep="last").set_index("date").sort_index()
     df.index.name = None
     return df[cols].astype(float)
+
+
+def unwrap_quote(payload: Any) -> dict[str, Any]:
+    """Return the object that holds the price fields. Servers nest it differently (top level,
+    under `stock`, under `index`, or as the first row of a list)."""
+    if isinstance(payload, dict):
+        if pick(payload, QUOTE_KEYS["last_price"]) is not None:
+            return payload
+        for v in payload.values():
+            if isinstance(v, dict) and pick(v, QUOTE_KEYS["last_price"]) is not None:
+                return {**{k: x for k, x in payload.items() if not isinstance(x, dict | list)}, **v}
+    rows = find_rows(payload)
+    return rows[0] if rows else (payload if isinstance(payload, dict) else {})
+
+
+def payload_error(payload: Any) -> str | None:
+    """Some tools report failure inside a normal result, e.g. {"error": "Symbol not found"}."""
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str) and payload["error"].strip():
+        return payload["error"].strip()[:300]
+    return None

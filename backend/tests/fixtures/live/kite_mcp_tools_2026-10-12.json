@@ -1,13 +1,12 @@
 {
- "_recorded": "2026-10-12 from https://mcp.kite.trade/mcp (tools/list, unauthenticated). Server: Kite MCP Server v0.3.2",
+ "_recorded": "2026-10-12 from https://mcp.kite.trade/mcp",
+ "server": {
+  "name": "Kite MCP Server",
+  "version": "v0.3.2"
+ },
  "tools": [
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "cancel_order",
    "description": "Cancel an existing order",
    "inputSchema": {
     "properties": {
@@ -33,16 +32,10 @@
      "order_id"
     ],
     "type": "object"
-   },
-   "name": "cancel_order"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "delete_gtt_order",
    "description": "Delete an existing GTT (Good Till Triggered) order",
    "inputSchema": {
     "properties": {
@@ -55,16 +48,10 @@
      "trigger_id"
     ],
     "type": "object"
-   },
-   "name": "delete_gtt_order"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_gtts",
    "description": "Get all active GTT orders. Supports pagination for large datasets.",
    "inputSchema": {
     "properties": {
@@ -78,16 +65,10 @@
      }
     },
     "type": "object"
-   },
-   "name": "get_gtts"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_historical_data",
    "description": "Get historical price data for an instrument",
    "inputSchema": {
     "properties": {
@@ -135,16 +116,10 @@
      "interval"
     ],
     "type": "object"
-   },
-   "name": "get_historical_data"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_holdings",
    "description": "Get holdings for the current user. Supports pagination for large datasets.",
    "inputSchema": {
     "properties": {
@@ -158,16 +133,10 @@
      }
     },
     "type": "object"
-   },
-   "name": "get_holdings"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_ltp",
    "description": "Get latest trading prices for a list of instruments",
    "inputSchema": {
     "properties": {
@@ -183,30 +152,18 @@
      "instruments"
     ],
     "type": "object"
-   },
-   "name": "get_ltp"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_margins",
    "description": "Get margins",
    "inputSchema": {
     "properties": {},
     "type": "object"
-   },
-   "name": "get_margins"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_mf_holdings",
    "description": "Get all mutual fund holdings. Supports pagination for large datasets.",
    "inputSchema": {
     "properties": {
@@ -220,16 +177,10 @@
      }
     },
     "type": "object"
-   },
-   "name": "get_mf_holdings"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_ohlc",
    "description": "Get OHLC (Open, High, Low, Close) data for a list of instruments",
    "inputSchema": {
     "properties": {
@@ -245,16 +196,10 @@
      "instruments"
     ],
     "type": "object"
-   },
-   "name": "get_ohlc"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_order_history",
    "description": "Get order history for a specific order",
    "inputSchema": {
     "properties": {
@@ -267,16 +212,10 @@
      "order_id"
     ],
     "type": "object"
-   },
-   "name": "get_order_history"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_order_trades",
    "description": "Get trades for a specific order",
    "inputSchema": {
     "properties": {
@@ -289,16 +228,10 @@
      "order_id"
     ],
     "type": "object"
-   },
-   "name": "get_order_trades"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_orders",
    "description": "Get all orders. Supports pagination for large datasets.",
    "inputSchema": {
     "properties": {
@@ -312,16 +245,10 @@
      }
     },
     "type": "object"
-   },
-   "name": "get_orders"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_positions",
    "description": "Get current positions. Supports pagination for large datasets.",
    "inputSchema": {
     "properties": {
@@ -335,30 +262,18 @@
      }
     },
     "type": "object"
-   },
-   "name": "get_positions"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_profile",
    "description": "Retrieve the user's profile information, including user ID, name, email, and account details like products orders, and exchanges available to the user. Use this to get basic user details.",
    "inputSchema": {
     "properties": {},
     "type": "object"
-   },
-   "name": "get_profile"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_quotes",
    "description": "Get market data quotes for a list of instruments",
    "inputSchema": {
     "properties": {
@@ -374,16 +289,10 @@
      "instruments"
     ],
     "type": "object"
-   },
-   "name": "get_quotes"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "get_trades",
    "description": "Get trading history. Supports pagination for large datasets.",
    "inputSchema": {
     "properties": {
@@ -397,30 +306,18 @@
      }
     },
     "type": "object"
-   },
-   "name": "get_trades"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "login",
    "description": "Login to Kite API. This tool helps you log in to the Kite API. If you are starting off a new conversation call this tool before hand. Call this if you get a session error. Returns a link that the user should click to authorize access, present as markdown if your client supports so that they can click it easily when rendered.",
    "inputSchema": {
     "properties": {},
     "type": "object"
-   },
-   "name": "login"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "modify_gtt_order",
    "description": "Modify an existing GTT (Good Till Triggered) order",
    "inputSchema": {
     "properties": {
@@ -510,16 +407,10 @@
      "trigger_type"
     ],
     "type": "object"
-   },
-   "name": "modify_gtt_order"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "modify_order",
    "description": "Modify an existing order",
    "inputSchema": {
     "properties": {
@@ -583,16 +474,10 @@
      "order_type"
     ],
     "type": "object"
-   },
-   "name": "modify_order"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "place_gtt_order",
    "description": "Place a GTT (Good Till Triggered) order",
    "inputSchema": {
     "properties": {
@@ -688,16 +573,10 @@
      "trigger_type"
     ],
     "type": "object"
-   },
-   "name": "place_gtt_order"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "place_order",
    "description": "Place an order",
    "inputSchema": {
     "properties": {
@@ -812,16 +691,10 @@
      "order_type"
     ],
     "type": "object"
-   },
-   "name": "place_order"
+   }
   },
   {
-   "annotations": {
-    "readOnlyHint": false,
-    "destructiveHint": true,
-    "idempotentHint": false,
-    "openWorldHint": true
-   },
+   "name": "search_instruments",
    "description": "Search instruments. Supports pagination for large result sets.",
    "inputSchema": {
     "properties": {
@@ -853,8 +726,7 @@
      "query"
     ],
     "type": "object"
-   },
-   "name": "search_instruments"
+   }
   }
  ]
 }

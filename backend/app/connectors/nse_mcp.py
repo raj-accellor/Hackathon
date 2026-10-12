@@ -38,6 +38,7 @@ CAPABILITY_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     # Nothing in the published tool lists serves these; they resolve to not_supported unless a
     # server starts advertising a matching tool name.
     "index_history": ("bhav", ("get_index_history",)),
+    "index_quote": ("cm", ("cm_get_index_quote",)),
     "intraday_history": ("cm", ("get_intraday_history", "cm_get_intraday_data")),
     "fundamentals": ("bhav", ("get_financial_results", "get_fundamentals")),
 }
@@ -104,13 +105,16 @@ class NseMcpProvider:
                 await c.connect(refresh=True)
                 c, tool, reason = self._resolve(cap)
             except McpError as e:
-                reason = f"{c.name} unavailable: {e}"
+                reason = f"{c.name} unavailable: {e}"  # type: ignore[union-attr]
         if c is None or tool is None:
             state = "not_configured" if c is None else ("unavailable" if not c.connected else "not_supported")
             raise ProviderUnavailable(reason or "unsupported", state, self.name)
         try:
             args = bind_args(c.tools[tool].input_schema, intents)
-            return await c.call(tool, args), tool
+            payload = await c.call(tool, args)
+            if (err := ps.payload_error(payload)) is not None:
+                raise ProviderUnavailable(f"{tool}: {err}", "unavailable", self.name)
+            return payload, tool
         except BindError as e:
             raise ProviderUnavailable(f"{tool}: {e}", "not_supported", self.name) from e
         except McpNotSupported as e:
@@ -121,18 +125,22 @@ class NseMcpProvider:
             raise ProviderUnavailable(str(e), "unavailable", self.name) from e
 
     # ------------------------------------------------------------------ data
-    async def get_history(self, symbol: str, start: date, end: date) -> BarsResult:
-        """Daily bars in [start, end]. The history tool returns a limited window per call, so this
+    async def get_history(self, symbol: str, start: date, end: date, instrument_type: str = "EQ") -> BarsResult:
+        """Daily bars in [start, end]. The history tools return a limited window per call, so this
         pages backwards using the server's `next_end_date` cursor when present, otherwise the day
-        before the oldest row returned."""
-        c, tool, _ = self._resolve("history")
+        before the oldest row returned. Indices use the index-history tool when one is advertised."""
+        is_index = instrument_type == "INDEX"
+        cap = "index_history" if is_index else "history"
+        c, tool, _ = self._resolve(cap)
         has_cursor = bool(c and tool and find_property(c.tools[tool].input_schema, "end_date"))
         frames: list[pd.DataFrame] = []
-        cursor: date | None = end
+        cursor: date | None = None if end >= datetime.now(UTC).date() else end  # None lets the server use "today"
         used_tool = tool or "get_stock_history"
         warnings: list[str] = []
+        ident = {"index_name": symbol} if is_index else {"symbol": symbol.upper()}
+        chunk_months = 12 if is_index else 3  # the documented per-call maxima
         for page in range(MAX_PAGES):
-            payload, used_tool = await self._call("history", {"symbol": symbol.upper(), "end_date": cursor, "start_date": start})
+            payload, used_tool = await self._call(cap, {**ident, "end_date": cursor, "start_date": start, "months": chunk_months})
             df = ps.bars_frame(ps.find_rows(payload))
             if df.empty:
                 break
@@ -152,14 +160,16 @@ class NseMcpProvider:
             raise ProviderUnavailable(f"{used_tool}: no rows returned for {symbol}", "unavailable", self.name)
         df = pd.concat(frames)
         df = df[~df.index.duplicated(keep="first")].sort_index().loc[pd.Timestamp(start): pd.Timestamp(end)]
+        if df.empty:
+            raise ProviderUnavailable(f"{used_tool}: no rows in the requested range for {symbol}", "unavailable", self.name)
         return BarsResult(symbol.upper(), df, self.name, used_tool, datetime.now(UTC), "unadjusted", "INR", self.is_demo, warnings)
 
-    async def get_quote(self, symbol: str) -> QuoteResult:
-        payload, tool = await self._call("quote", {"symbol": symbol.upper()})
-        row = payload if isinstance(payload, dict) else (ps.find_rows(payload) or [{}])[0]
-        if isinstance(row, dict) and ps.pick(row, ps.QUOTE_KEYS["last_price"]) is None:
-            nested = ps.find_rows(row)
-            row = nested[0] if nested else row
+    async def get_quote(self, symbol: str, instrument_type: str = "EQ") -> QuoteResult:
+        if instrument_type == "INDEX":
+            payload, tool = await self._call("index_quote", {"index_name": symbol})
+        else:
+            payload, tool = await self._call("quote", {"symbol": symbol.upper()})
+        row = ps.unwrap_quote(payload)
         now = datetime.now(UTC)
         as_of = ps.parse_datetime(ps.pick(row, ps.QUOTE_TIME_KEYS))
         fields: dict[str, DataPoint] = {}
@@ -176,7 +186,9 @@ class NseMcpProvider:
         return QuoteResult(symbol.upper(), fields, self.name, now, row if isinstance(row, dict) else {})
 
     async def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
-        payload, _tool = await self._call("corporate_actions", {"symbol": symbol.upper()})
+        today = datetime.now(UTC).date()
+        payload, _tool = await self._call("corporate_actions", {"symbol": symbol.upper(), "start_date": today - timedelta(days=5 * 366),
+                                                                "end_date": today})
         out: list[CorporateAction] = []
         for r in ps.find_rows(payload):
             d = ps.parse_date(ps.pick(r, ("exdate", "exdt", "exdividenddate", "date", "recorddate")))
@@ -184,7 +196,14 @@ class NseMcpProvider:
             if d is None or not text:
                 continue
             parsed = parse_action(text)
-            out.append(CorporateAction(d, parsed[0], parsed[1], text) if parsed else CorporateAction(d, "other", None, text))
+            declared = str(ps.pick(r, ("actiontype", "type")) or "").lower()
+            if parsed:
+                out.append(CorporateAction(d, parsed[0], parsed[1], text))
+            else:
+                # A split or bonus the text parser cannot read keeps its kind with no ratio, so the
+                # unexplained-gap check can still warn about it instead of silently adjusting.
+                kind = "split" if "split" in declared else "bonus" if "bonus" in declared else "dividend" if "dividend" in declared else "other"
+                out.append(CorporateAction(d, kind, None, text))
         return sorted(out, key=lambda a: a.ex_date)
 
     async def search(self, query: str) -> list[dict[str, Any]]:
@@ -198,11 +217,11 @@ class NseMcpProvider:
         return out
 
     async def market_breadth(self) -> dict[str, Any]:
-        payload, tool = await self._call("market_breadth", {})
+        payload, tool = await self._call("market_breadth", {"date": datetime.now(UTC).date()})
         return {"data": payload, "source_id": tool, "provider": self.name, "retrieved_at": datetime.now(UTC).isoformat(), "is_demo": self.is_demo}
 
     async def live_movers(self) -> dict[str, Any]:
-        payload, tool = await self._call("live_movers", {})
+        payload, tool = await self._call("live_movers", {"limit": 10})
         return {"data": payload, "source_id": tool, "provider": self.name, "retrieved_at": datetime.now(UTC).isoformat(), "is_demo": self.is_demo}
 
     async def data_status(self) -> dict[str, Any]:

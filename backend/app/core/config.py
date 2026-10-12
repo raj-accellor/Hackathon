@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     rate_limit_default_per_minute: int = 300
     max_request_bytes: int = 5_000_000
 
+    mock_mcp_host: str = "127.0.0.1"
     mock_mcp_port: int = Field(default=9100, description="Base port of the local mock MCP servers used in demo mode")
 
     @property
@@ -107,12 +108,9 @@ class Settings(BaseSettings):
     def resolved_mcp_urls(self) -> dict[str, str | None]:
         """In demo mode the three connectors use the local mock servers unless a URL is set."""
         if self.is_demo:
-            p = self.mock_mcp_port
-            return {
-                "nse_bhavcopy": self.nse_bhavcopy_mcp_url or f"http://127.0.0.1:{p}/mcp",
-                "nse_cm_market": self.nse_cm_market_mcp_url or f"http://127.0.0.1:{p + 1}/mcp",
-                "broker": self.broker_mcp_url or f"http://127.0.0.1:{p + 2}/mcp",
-            }
+            # Demo mode always uses the local mock servers, whatever live URLs are present in .env.
+            p, h = self.mock_mcp_port, self.mock_mcp_host
+            return {"nse_bhavcopy": f"http://{h}:{p}/mcp", "nse_cm_market": f"http://{h}:{p + 1}/mcp", "broker": f"http://{h}:{p + 2}/mcp"}
         return {"nse_bhavcopy": self.nse_bhavcopy_mcp_url, "nse_cm_market": self.nse_cm_market_mcp_url,
                 "broker": self.broker_mcp_url}
 

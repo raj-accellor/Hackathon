@@ -67,20 +67,20 @@ def evaluate(m: Mapping[str, Any]) -> EntrySetup:
         return Condition(key, label, rule, None if any(i is None for i in inputs) else bool(test()), detail)
 
     conds = [
-        cond("trend", "Price trend", "close > SMA50 > SMA200", [close, s50, s200], lambda: close > s50 > s200,
+        cond("trend", "Price trend", "close > SMA50 > SMA200", [close, s50, s200], lambda: close > s50 > s200,  # type: ignore[operator]
              f"close {_fmt(close)}, SMA50 {_fmt(s50)}, SMA200 {_fmt(s200)}"),
         cond("momentum", "Momentum and relative strength", "6M return > 0 and 6M relative strength > 0", [r6, rs6],
-             lambda: r6 > 0 and rs6 > 0, f"6M return {_fmt(r6, 1)}%, relative strength {_fmt(rs6, 1)}%"),
-        cond("not_overbought", "Not overextended", "RSI(14) < 75", [rsi], lambda: rsi < 75, f"RSI {_fmt(rsi, 1)}"),
-        cond("valuation", "Valuation versus peers", "valuation pillar score >= 40", [val], lambda: val >= 40,
+             lambda: r6 > 0 and rs6 > 0, f"6M return {_fmt(r6, 1)}%, relative strength {_fmt(rs6, 1)}%"),  # type: ignore[operator]
+        cond("not_overbought", "Not overextended", "RSI(14) < 75", [rsi], lambda: rsi < 75, f"RSI {_fmt(rsi, 1)}"),  # type: ignore[operator]
+        cond("valuation", "Valuation versus peers", "valuation pillar score >= 40", [val], lambda: val >= 40,  # type: ignore[operator]
              f"valuation score {_fmt(val, 0)}"),
-        cond("quality", "Fundamental quality", "fundamentals pillar score >= 50", [fund], lambda: fund >= 50,
+        cond("quality", "Fundamental quality", "fundamentals pillar score >= 50", [fund], lambda: fund >= 50,  # type: ignore[operator]
              f"fundamentals score {_fmt(fund, 0)}"),
         cond("risk", "Risk", "risk label is not Very High", [risk], lambda: risk != "Very High", f"risk label {risk or 'n/a'}"),
         cond("liquidity", "Liquidity", f"average traded value >= INR {MIN_TRADED_VALUE:,.0f} a day", [atv],
-             lambda: atv >= MIN_TRADED_VALUE, f"avg traded value {_fmt(atv, 0)}"),
+             lambda: atv >= MIN_TRADED_VALUE, f"avg traded value {_fmt(atv, 0)}"),  # type: ignore[operator]
         cond("data", "Data completeness and freshness", f"completeness >= {MIN_COMPLETENESS:.0f}% and price data <= {MAX_AGE_DAYS} days old",
-             [comp, age], lambda: comp >= MIN_COMPLETENESS and age <= MAX_AGE_DAYS,
+             [comp, age], lambda: comp >= MIN_COMPLETENESS and age <= MAX_AGE_DAYS,  # type: ignore[operator]
              f"completeness {_fmt(comp, 0)}%, data age {_fmt(age, 0)} day(s)"),
     ]
     reasons: list[str] = []

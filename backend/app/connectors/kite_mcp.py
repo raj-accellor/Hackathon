@@ -38,6 +38,7 @@ class KiteMcpProvider:
         self._instruments: dict[str, dict[str, Any]] = {}
         self._start_error: str | None = None
         self._auth: dict[str, Any] = {"state": "unknown"}
+        self._pending_login_url: str | None = None  # a link has been issued and not yet approved
 
     async def start(self) -> None:
         if self.client is None:
@@ -93,10 +94,15 @@ class KiteMcpProvider:
         except BindError as e:
             raise ProviderUnavailable(f"{tool}: {e}", "not_supported", self.name) from e
         except McpToolError as e:
-            if _LOGIN_HINT.search(str(e)):
-                self._auth = {"state": "login_required"}
+            if _LOGIN_HINT.search(str(e)) or (self._pending_login_url and tool not in ("login", "search_instruments")):
+                self._auth = {**self._auth, "state": "login_required"}
                 raise ProviderUnavailable("broker login required: authorise the Kite session from the Data status page",
                                           "login_required", self.name) from e
+            # Before login some data tools fail with a generic message; confirm the session state once.
+            if tool in ("get_historical_data", "get_quotes", "get_ohlc", "get_ltp") and self._auth.get("state") != "authorized":
+                if (await self.auth_state()).get("state") == "login_required":
+                    raise ProviderUnavailable("broker login required: authorise the Kite session from the Data status page",
+                                              "login_required", self.name) from e
             raise ProviderUnavailable(str(e), "unavailable", self.name) from e
         except McpError as e:
             raise ProviderUnavailable(str(e), "unavailable", self.name) from e
@@ -112,7 +118,13 @@ class KiteMcpProvider:
             profile = await self._call("get_profile", {})
             who = profile.get("user_id") if isinstance(profile, dict) else None
             self._auth = {"state": "authorized", "user_id": who, "checked_at": now}
+            self._pending_login_url = None
         except ProviderUnavailable as e:
+            note = "Open the link, approve access in Kite, then re-check. Access is read-only market data."
+            if self._pending_login_url and e.state in ("login_required", "unavailable") and self.client.connected:
+                # Until the link is approved the server answers with generic failures.
+                self._auth = {"state": "login_required", "login_url": self._pending_login_url, "checked_at": now, "note": note}
+                return self._auth
             if e.state != "login_required":
                 self._auth = {"state": e.state, "reason": str(e), "checked_at": now}
                 return self._auth
@@ -123,8 +135,8 @@ class KiteMcpProvider:
                 url = m.group(0) if m else None
             except ProviderUnavailable:
                 pass
-            self._auth = {"state": "login_required", "login_url": url, "checked_at": now,
-                          "note": "Open the link, approve access in Kite, then re-check. Access is read-only market data."}
+            self._pending_login_url = url
+            self._auth = {"state": "login_required", "login_url": url, "checked_at": now, "note": note}
         return self._auth
 
     # ------------------------------------------------------------------ data
@@ -132,11 +144,14 @@ class KiteMcpProvider:
         sym = symbol.upper()
         if sym in self._instruments:
             return self._instruments[sym]
-        payload = await self._call("search_instruments", {"query": sym, "filter_on": "tradingsymbol", "limit": 50})
+        key = f"{self.exchange}:{sym}"
+        # `id` is the exchange:tradingsymbol key, so this is an exact lookup rather than a text search.
+        payload = await self._call("search_instruments", {"query": key, "filter_on": "id", "limit": 20})
         rows = ps.find_rows(payload)
-        exact = [r for r in rows if str(r.get("tradingsymbol", "")).upper() == sym and str(r.get("exchange", "")).upper() == self.exchange]
+        exact = [r for r in rows if str(r.get("id", "")).upper() == key
+                 or (str(r.get("tradingsymbol", "")).upper() == sym and str(r.get("exchange", "")).upper() == self.exchange)]
         if not exact:
-            raise ProviderUnavailable(f"{self.exchange}:{sym} not found at the broker", "unavailable", self.name)
+            raise ProviderUnavailable(f"{key} not found at the broker", "unavailable", self.name)
         self._instruments[sym] = exact[0]
         return exact[0]
 

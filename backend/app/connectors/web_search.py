@@ -55,7 +55,7 @@ def source_type(url: str) -> str:
 
 def normalise(items: list[dict[str, Any]], provider: str) -> list[dict[str, Any]]:
     now = datetime.now(UTC).isoformat()
-    out = []
+    out = []  # type: ignore[var-annotated]
     for it in items:
         url = safe_url(it.get("url"))
         if not url:

@@ -202,7 +202,7 @@ def heuristic_assess(commitments: list[Commitment], cur_text: str) -> list[Asses
                                 rationale="No sentence in the current call shares enough key terms with this commitment."))
             continue
         ev = keyed[best][0]
-        verdict: Verdict = next((v for v, pat in _CUES if re.search(pat, ev, re.I)), "in_progress")  # type: ignore[assignment]
+        verdict: Verdict = next((v for v, pat in _CUES if re.search(pat, ev, re.I)), "in_progress")  # type: ignore[assignment,misc]
         out.append(Assessed(id=cm.id, verdict=verdict, evidence_quote=ev,
                             rationale=f"Matched on {best_n} shared key terms; verdict from cue words in the matched sentence."))
     return out

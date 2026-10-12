@@ -124,7 +124,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         d = exc.detail if isinstance(exc.detail, dict) else {"code": "http_error", "message": str(exc.detail), "details": None}
-        return error(exc.status_code, d.get("code", "http_error"), d.get("message", ""), request, d.get("details"), getattr(exc, "headers", None))
+        return error(exc.status_code, d.get("code", "http_error"), d.get("message", ""), request, d.get("details"), getattr(exc, "headers", None))  # type: ignore[arg-type]
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:

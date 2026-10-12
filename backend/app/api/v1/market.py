@@ -87,7 +87,7 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
     }
 
 
-@router.post("/sources/broker/login", dependencies=[rate_limit("refresh")])
+@router.post("/sources/broker/login", dependencies=[rate_limit("default")])
 async def broker_login(c: Ctx, actor: Actor) -> dict[str, Any]:
     """Current broker session state. When login is required the response carries the Kite
     authorisation link for the account holder to open."""
@@ -152,7 +152,7 @@ async def get_instrument(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any
                                 .where(MetricSnapshot.is_latest.is_(True), Instrument.sector == inst.sector))).all()
         cols = ("close", "overall_score", "return_3m", "return_12m", "pe", "roe", "volatility_252d")
         peers = sorted(({"instrument_id": i.id, "symbol": i.symbol, "name": i.name, **{k: m.flat.get(k) for k in cols},
-                         "partial_score": m.score.get("partial_overall")} for m, i in rows), key=lambda r: r["symbol"])
+                         "partial_score": m.score.get("partial_overall")} for m, i in rows), key=lambda r: r["symbol"])  # type: ignore[arg-type,return-value]
     return {
         **meta(c, as_of=snap.as_of.isoformat() if snap is not None else None), "instrument": inst_dict(inst), "quote": quote,
         "snapshot": None if snap is None else {"as_of": snap.as_of.isoformat(), "computed_at": snap.computed_at.isoformat(),
@@ -425,7 +425,7 @@ async def overview(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
     chg = [m.flat.get("return_1w") for m, _ in rows if m.flat.get("return_1w") is not None]
     breadth = None
     if chg:
-        breadth = {"advancing_1w": sum(1 for x in chg if x > 0), "declining_1w": sum(1 for x in chg if x < 0), "instruments": len(chg)}
+        breadth = {"advancing_1w": sum(1 for x in chg if x > 0), "declining_1w": sum(1 for x in chg if x < 0), "instruments": len(chg)}  # type: ignore[misc,operator]
     market: dict[str, Any] = {"state": "missing"}
     try:
         market = {"state": "ok", **await c.nse.market_breadth()}

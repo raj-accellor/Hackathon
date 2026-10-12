@@ -252,11 +252,15 @@ def build_kite() -> MCPServer:
 
     @s.tool(description="Search instruments. Supports pagination for large result sets.")
     def search_instruments(query: str, filter_on: str | None = None, limit: int | None = None) -> str:
-        _auth()
+        # as on the real server, instrument search works before login
         q = query.lower()
-        hits = [i for i in [*dd.instruments(), *dd.indices()] if q in i.symbol.lower() or q in i.name.lower()]
+        every = [*dd.instruments(), *dd.indices()]
+        if filter_on in (None, "id"):
+            hits = [i for i in every if q in f"nse:{i.symbol}".lower()]
+        else:
+            hits = [i for i in every if q in i.symbol.lower() or q in i.name.lower()]
         data = [{"instrument_token": i.token, "exchange_token": i.token % 100000, "tradingsymbol": i.symbol, "name": i.name,
-                 "exchange": "NSE", "segment": "INDICES" if i.instrument_type == "INDEX" else "NSE",
+                 "isin": "", "exchange": "NSE", "segment": "INDICES" if i.instrument_type == "INDEX" else "NSE",
                  "instrument_type": "EQ", "lot_size": 1, "tick_size": 0.05, "id": f"NSE:{i.symbol}"} for i in hits]
         return _j({"data": data[: limit or 50], "pagination": {"total": len(data)}})
 
@@ -335,27 +339,33 @@ def build_kite() -> MCPServer:
 SERVERS = (build_bhavcopy, build_cm_market, build_kite)
 
 
-def make_uvicorn_servers(port: int, log_level: str = "warning") -> list[uvicorn.Server]:
+def make_uvicorn_servers(port: int, log_level: str = "warning", host: str = "127.0.0.1") -> list[uvicorn.Server]:
     STATE.port = port
+    kwargs: dict[str, Any] = {"json_response": True, "host": host}
+    if host != "127.0.0.1":
+        # Inside a container network the servers are addressed by service name.
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        kwargs["transport_security"] = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     return [
-        uvicorn.Server(uvicorn.Config(build().streamable_http_app(json_response=True), host="127.0.0.1", port=port + n,
-                                      log_level=log_level, lifespan="on"))
+        uvicorn.Server(uvicorn.Config(build().streamable_http_app(**kwargs), host=host, port=port + n, log_level=log_level, lifespan="on"))
         for n, build in enumerate(SERVERS)
     ]
 
 
-async def serve(port: int, auto_login: bool) -> None:
+async def serve(port: int, auto_login: bool, host: str = "127.0.0.1") -> None:
     STATE.kite_logged_in = auto_login
-    await asyncio.gather(*(s.serve() for s in make_uvicorn_servers(port, "info")))
+    await asyncio.gather(*(s.serve() for s in make_uvicorn_servers(port, "info", host)))
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="DEMO-ONLY mock MCP servers")
     ap.add_argument("--port", type=int, default=9100)
     ap.add_argument("--no-auto-login", action="store_true", help="require the broker login flow as the real Kite MCP does")
+    ap.add_argument("--host", default="127.0.0.1")
     a = ap.parse_args()
     print(f"[mock-mcp] DEMO synthetic data on 127.0.0.1:{a.port} (bhavcopy), :{a.port + 1} (cm market), :{a.port + 2} (kite)")
-    asyncio.run(serve(a.port, not a.no_auto_login))
+    asyncio.run(serve(a.port, not a.no_auto_login, a.host))
 
 
 if __name__ == "__main__":

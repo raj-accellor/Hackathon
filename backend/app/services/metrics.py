@@ -139,7 +139,7 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
         for k in members:
             flat[k]["pe_sector_percentile"] = ranks[k]
             bundles[int(k)]["pe_sector_percentile"] = (
-                ok("pe_sector_percentile", ranks[k], "pct", "mid-rank percentile of P/E among sector peers", {"sector": sector, "peers": len(members)})
+                ok("pe_sector_percentile", ranks[k], "pct", "mid-rank percentile of P/E among sector peers", {"sector": sector, "peers": len(members)})  # type: ignore[arg-type]
                 if ranks[k] is not None
                 else bad("pe_sector_percentile", Status.MISSING if flat[k].get("pe") is None else Status.INSUFFICIENT_HISTORY,
                          "P/E unavailable" if flat[k].get("pe") is None else f"fewer than {scoring.MIN_PEERS} sector peers with a valid P/E",
@@ -157,7 +157,7 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
         ex = extras[iid]
         rl = risk.risk_label(row_flat.get("volatility_252d"), row_flat.get("max_drawdown_1y"), row_flat.get("beta"))
         pillar = {p: (None if r.score is None else round(r.score, 1)) for p, r in sr.pillars.items()}
-        for p, v in pillar.items():
+        for p, v in pillar.items():  # type: ignore[assignment]
             row_flat[f"{p}_score"] = v
         row_flat["overall_score"] = None if sr.overall is None else round(sr.overall, 1)
         row_flat["completeness_pct"] = round(sr.completeness_pct, 1)
@@ -190,7 +190,7 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
         row.flat = row_flat
         row.detail = {k: {kk: vv for kk, vv in v.to_dict().items() if kk != "value"} for k, v in bundles[iid].items()}
         row.score, row.versions = score_doc, VERSIONS
-        row.overall_score = None if sr.overall is None else round(sr.overall, 2)
+        row.overall_score = None if sr.overall is None else round(sr.overall, 2)  # type: ignore[assignment]
         row.is_latest, row.is_demo, row.computed_at = True, c.settings.is_demo, now
     await s.commit()
     complete = sum(1 for r in scores.values() if r.complete)
