@@ -99,7 +99,11 @@ async def demo(mock_mcp, tmp_path_factory):
     from app.services import jobs, pipeline
 
     tmp = tmp_path_factory.mktemp("demo")
-    base = dict(_env_file=None, app_env="test", data_mode="demo", database_url=f"sqlite+aiosqlite:///{tmp}/app.db",
+    # TEST_DATABASE_URL runs the same suite on another database (e.g. PostgreSQL). That database must
+    # be empty and already migrated with Alembic; the app then does not create tables itself.
+    external = os.environ.get("TEST_DATABASE_URL")
+    base = dict(_env_file=None, app_env="test", data_mode="demo", database_url=external or f"sqlite+aiosqlite:///{tmp}/app.db",
+                auto_create_schema=not external, redis_url=os.environ.get("TEST_REDIS_URL") or None,
                 mock_mcp_port=int(mock_mcp["port"]), scheduler_enabled=False, fundamentals_dir=tmp / "fund", history_years=2,
                 rate_limit_research_per_minute=10_000, rate_limit_refresh_per_minute=10_000, rate_limit_default_per_minute=100_000)
     settings = Settings(**base)

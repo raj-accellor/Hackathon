@@ -75,6 +75,7 @@ production or public use.
 | Frontend unit tests | `cd frontend && npm test` |
 | Frontend type check and build | `cd frontend && npm run typecheck && npm run build` |
 | End-to-end tests (starts the demo stack if needed) | `cd frontend && npm run e2e` |
+| Integration tests on PostgreSQL and Redis | `TEST_DATABASE_URL=postgresql+asyncpg://… TEST_REDIS_URL=redis://… uv run pytest tests/api tests/services` (empty database, migrated with Alembic first) |
 | Full stack in containers | `docker compose --profile demo up --build` |
 
 API reference: <http://127.0.0.1:8000/docs> while the API is running.
@@ -97,15 +98,18 @@ docs/                    architecture, methodology, data formats, operations
 
 | Area | Status |
 |---|---|
-| Backend unit, contract, integration, security and scheduler tests | 270 passing (`uv run pytest`) |
+| Backend unit, contract, integration, security and scheduler tests | 271 passing, 86% line coverage (`uv run pytest --cov=app`) |
 | Frontend component tests | 14 passing |
 | Browser end-to-end tests (demo stack, desktop and mobile) | 13 passing |
 | NSE MCP, real servers | Verified on 2026-10-12 with the application's connectors: tool discovery, quotes, paged history, index history, corporate actions, and a full pipeline run on 12 stocks |
 | Kite MCP, real server | Tool discovery, allowlist and instrument lookup verified. Quotes and history need an account login and were **not** verified against the real server; they are covered by mock contract tests only |
 | Kite Connect REST | Mocked contract tests only; needs a developer app |
-| Web search (`ddgs`) | Verified with real searches on 2026-10-12; unit tests use a stand-in client |
+| Web search (`ddgs`) | Verified on 2026-10-12: research generated through the API for INFY and RELIANCE in live mode with real NSE quotes and retrieved sources; unit tests use a stand-in client |
 | Hugging Face LLM | Route, token and model id (`zai-org/GLM-5.3-Flash`) confirmed on 2026-10-12, but the account had no inference credits (HTTP 402), so no completion was produced. Behaviour with real model output is covered by mocked tests only |
-| Docker Compose, PostgreSQL, Redis | Written but **not run**: Docker was not available on the authoring machine. The Alembic migration was applied and checked on SQLite only |
+| PostgreSQL and Redis | Verified on 2026-10-12 against PostgreSQL 16.2 and Redis 6.2: the Alembic migration applies with no drift, 82 integration tests pass on the migrated schema with Redis as cache and lock store, and the standalone worker ran a scheduled job |
+| Dependency audits | `pip-audit` and `npm audit --omit=dev`: no known vulnerabilities on 2026-10-12 |
+| Docker Compose, Dockerfiles, nginx | Written but **not run**: Docker was not available on the authoring machine |
+| CI workflow | Never run on a GitHub runner. Each of its steps was run locally and passes |
 
 ## Known limitations
 

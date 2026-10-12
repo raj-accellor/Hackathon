@@ -195,9 +195,18 @@ async def test_ddgs_news_results_are_normalised_and_classified():
     assert [r["url"] for r in out] == ["https://www.nseindia.com/x", "https://news.example.com/a"], "unsafe and internal URLs are dropped"
     assert out[0]["source_type"] == "primary" and out[1]["source_type"] == "secondary"
     assert out[0]["title"] == "Outcome of Board Meeting" and out[0]["snippet"] == "Board approved results"
-    assert out[0]["published_at"] == "2026-10-08T10:03:36+00:00" and out[1]["published_at"] is None
+    assert out[0]["published_at"] == "2026-10-08" and out[1]["published_at"] is None, "day-level date only; no invented time of day"
     assert out[0]["id"] == "S1" and out[0]["provider"] == "ddgs" and out[0]["retrieved_at"]
     assert s.status()["state"] == "ok" and s.status()["last_success_at"]
+
+
+async def test_ddgs_orders_newest_first_and_reports_dates_in_market_time():
+    rows = [{"date": "2026-04-22T18:30:00+00:00", "title": "Old", "body": "b", "url": "https://a.example.com/old"},
+            {"date": "", "title": "Undated", "body": "b", "url": "https://a.example.com/undated"},
+            {"date": "2026-10-09T10:24:20+00:00", "title": "New", "body": "b", "url": "https://a.example.com/new"}]
+    out = await DdgsSearch(client_factory=lambda: FakeDDGS(news=rows)).search("x")
+    assert [(r["id"], r["title"], r["published_at"]) for r in out] == [("S1", "New", "2026-10-09"), ("S2", "Old", "2026-04-23"), ("S3", "Undated", None)]
+    # 18:30 UTC is already the next day in India
 
 
 async def test_ddgs_falls_back_to_text_search_when_news_is_empty():

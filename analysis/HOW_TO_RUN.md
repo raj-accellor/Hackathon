@@ -335,6 +335,19 @@ npm run e2e
 The backend tests start their own mock MCP servers on free ports and use a temporary database, so
 they do not touch `backend/var/app.db` and can run while the app is running.
 
+To run the integration tests on PostgreSQL and Redis instead of SQLite and the in-process cache,
+point them at an **empty** database that has been migrated first:
+
+```bash
+cd backend
+export TEST_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/markets_test
+DATABASE_URL=$TEST_DATABASE_URL uv run alembic upgrade head
+TEST_REDIS_URL=redis://localhost:6379/15 uv run pytest tests/api tests/services
+```
+
+Security audits: `uvx pip-audit --disable-pip --no-deps -r requirements.txt` and, in `frontend`,
+`npm audit --omit=dev`.
+
 ---
 
 ## 9. Database migrations
@@ -364,8 +377,9 @@ Web app on http://127.0.0.1:8080, API on http://127.0.0.1:8000. This starts Post
 one-off migration, the API, a worker and nginx.
 
 **This path has not been run.** Docker was not installed on the machine where the project was
-built, so the Compose file, Dockerfiles, nginx config and the migration on PostgreSQL are untested.
-Expect to fix small issues the first time.
+built, so the Compose file, Dockerfiles and nginx config are untested; expect to fix small issues
+the first time. The application itself has been verified on PostgreSQL 16 and Redis 6 outside
+Docker, including the migration and the separate worker process.
 
 ---
 
@@ -400,7 +414,8 @@ API reference while running: http://127.0.0.1:8000/docs
 - It is a research tool. It cannot place orders and its output is not investment advice.
 - NSE states its MCP data is delayed and for informational and educational use, not commercial
   deployment or AI model training. Check NSE, Kite and search-provider terms before any public use.
-- Verified against real servers: NSE MCP (discovery, quotes, history, index history, corporate
-  actions, a full pipeline run). Not verified against real services: Kite quotes and history
-  (needs your login), Kite Connect REST, the Hugging Face model, web search, and the Docker path.
+- Verified against real services: NSE MCP (discovery, quotes, history, index history, corporate
+  actions, a full pipeline run), web search through `ddgs`, PostgreSQL and Redis.
+- Not verified: Kite quotes and history (needs your login), Kite Connect REST, real output from the
+  Hugging Face model (the account had no inference credits), and the Docker path.
 - Full status and limitations: `README.md` and `PLAN.md`. Formulas: `docs/methodology.md`.

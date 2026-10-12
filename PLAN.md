@@ -19,7 +19,11 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 
 ## Test results (fresh run, 2026-10-12)
 
-- `cd backend && uv run pytest` → 270 passed
+- `cd backend && uv run pytest` → 271 passed, 3 skipped (Redis-only tests), 86% line coverage
+- PostgreSQL 16.2 + Redis 6.2 (throwaway servers): `alembic upgrade head` and `alembic check` clean;
+  `pytest tests/api tests/services` → 82 passed on the migrated schema; standalone worker ran a cron job
+- `pip-audit` and `npm audit --omit=dev` → no known vulnerabilities
+- Live research through the API for INFY and RELIANCE: real NSE quotes plus `ddgs` sources, all citations grounded
 - `uv run ruff check .` → clean; `uv run mypy app` → clean (49 `type: ignore` comments cover typing gaps that were not resolved)
 - `uv run alembic upgrade head && uv run alembic check` on SQLite → applies, no drift
 - `cd frontend && npm run typecheck && npm test && npm run build` → clean, 14 passed, builds
@@ -54,9 +58,9 @@ index quotes from NSE, Kite lookup by exact `id`. Recorded schemas live in
 - Kite Connect REST and Brave search (no credentials). Web search through `ddgs` is verified.
 - Hugging Face GLM output: the token, route and model id `zai-org/GLM-5.3-Flash` are confirmed, but the
   account returned HTTP 402 (no inference credits), so no real completion has been seen.
-- Docker Compose, PostgreSQL, Redis, nginx config (Docker not installed). The migration has only
-  been applied to SQLite.
-- CI workflow (never executed on a runner).
+- Docker Compose, the Dockerfiles and the nginx config (Docker not installed). PostgreSQL and Redis
+  themselves are verified.
+- CI workflow on a GitHub runner (each step passes locally).
 - NSE split/bonus handling on a real split: parsing is tested on exchange-style purpose strings
   and the `adjustmentFactor` field the real tool returns is not used.
 

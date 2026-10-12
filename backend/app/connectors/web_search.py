@@ -12,11 +12,13 @@ from __future__ import annotations
 import asyncio
 import html
 import ipaddress
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -93,8 +95,12 @@ class DdgsSearch:
     name = "ddgs"
     available = True
 
-    def __init__(self, timeout: float = 15.0, region: str = "in-en", client_factory: Callable[[], Any] | None = None) -> None:
+    def __init__(self, timeout: float = 15.0, region: str = "in-en", client_factory: Callable[[], Any] | None = None,
+                 market_timezone: str = "Asia/Kolkata") -> None:
         self.timeout, self.region = timeout, region
+        self._tz = ZoneInfo(market_timezone)
+        for noisy in ("ddgs", "primp", "httpx", "httpcore"):  # the library logs every request URL
+            logging.getLogger(noisy).setLevel(logging.WARNING)
         self._factory = client_factory or self._default_client
         self._last_error: str | None = None
         self._last_success: str | None = None
@@ -106,12 +112,28 @@ class DdgsSearch:
 
     def status(self) -> dict[str, Any]:
         return {"name": self.name, "state": "degraded" if self._last_error else "ok", "last_success_at": self._last_success,
-                "last_error": self._last_error, "note": "Keyless DuckDuckGo-backed search; subject to rate limits."}
+                "last_error": self._last_error,
+                "note": "Keyless DuckDuckGo-backed search; subject to rate limits. Publication dates are day-level."}
+
+    def _day(self, value: Any) -> str | None:
+        """Publication day in the market timezone. The library reports day-level dates and estimates
+        a timestamp for relative ones ("3 days ago"), so the time of day is not kept."""
+        if not value:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts.astimezone(self._tz).date().isoformat()
 
     def _run(self, query: str, max_results: int) -> list[dict[str, Any]]:
         client = self._factory()
         rows = client.news(query, max_results=max_results, region=self.region) or []
-        items = [{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("body"), "published": r.get("date") or None} for r in rows]
+        items = [{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("body"), "published": self._day(r.get("date"))} for r in rows]
+        # newest first; undated items last
+        items.sort(key=lambda i: i["published"] or "", reverse=True)
         if not items:
             rows = client.text(query, max_results=max_results, region=self.region) or []
             items = [{"title": r.get("title"), "url": r.get("href") or r.get("url"), "snippet": r.get("body"), "published": None} for r in rows]
