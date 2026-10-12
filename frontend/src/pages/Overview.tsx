@@ -30,6 +30,8 @@ function Movers({ title, rows, unit }: { title: string; rows: any[]; unit: 'pct'
 
 export function Overview() {
   const q = useApi<any>(['overview'], '/overview')
+  const wl = useApi<any>(['watchlists'], '/watchlists')
+  const watched = (wl.data?.items ?? []).flatMap((w: any) => w.items.map((i: any) => ({ ...i, list: w.name }))).slice(0, 6)
   return (
     <>
       <PageHeader title="Overview" lede="Where the tracked universe stands, which sectors are rotating, and how fresh the data is." />
@@ -124,6 +126,41 @@ export function Overview() {
                 <Movers title="Strongest 3-month return" rows={d.top_momentum} unit="pct" />
                 <Movers title="Weakest 3-month return" rows={d.weakest_momentum} unit="pct" />
               </div>
+
+              <Panel title="Watchlist highlights" aside={<Link to="/watchlists">Watchlists and alerts</Link>}>
+                {watched.length === 0 ? (
+                  <EmptyState title="Nothing on a watchlist yet" action={<Link to="/watchlists">Create a watchlist</Link>} />
+                ) : (
+                  <div className="scroll-x">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Instrument</th>
+                          <th>List</th>
+                          <th className="r">Close (₹)</th>
+                          <th className="r">1 week</th>
+                          <th>Entry setup</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {watched.map((i: any) => (
+                          <tr key={`${i.list}-${i.item_id}`}>
+                            <td>
+                              <Link to={instrumentPath(i.symbol)} className="font-semibold">
+                                {i.symbol}
+                              </Link>
+                            </td>
+                            <td className="text-ink-2">{i.list}</td>
+                            <td className="r num">{i.close == null ? <Missing reason="No price history ingested" /> : fmtNum(i.close)}</td>
+                            <td className={`r num ${signClass(i.return_1w)}`}>{fmtSigned(i.return_1w)}</td>
+                            <td>{i.entry_state ? <StateBadge state={i.entry_state} label={i.entry_state} /> : <Missing />}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Panel>
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <Panel title="Theme leaders" aside={<Link to="/themes">All themes</Link>}>

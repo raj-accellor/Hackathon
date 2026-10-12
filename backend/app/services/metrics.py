@@ -194,6 +194,10 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
         row.is_latest, row.is_demo, row.computed_at = True, c.settings.is_demo, now
     await s.commit()
     complete = sum(1 for r in scores.values() if r.complete)
+    from app.observability import metrics as om
+
+    om.STALE_INSTRUMENTS.set(sum(1 for e in extras.values() if e["data_age_days"] > FRESH_DAYS))
+    om.DATA_COVERAGE.set(complete / len(ids) if ids else 0)
     return {"status": "ok", "as_of": as_of.isoformat(), "instruments": len(ids), "complete_scores": complete,
             "incomplete_scores": len(ids) - complete, "versions": VERSIONS}
 
