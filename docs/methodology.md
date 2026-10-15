@@ -23,7 +23,7 @@ gap. NSE bhavcopy prices are unadjusted and are adjusted before being compared w
 
 ## Source reconciliation (`reconcile-v1`)
 
-Order of use: NSE MCP, Kite MCP, Kite Connect. The first source with a value supplies it; a later
+Order of use: NSE MCP, then Kite MCP. The first source with a value supplies it; a later
 source only fills a gap. Where two sources both have a value, a relative difference above the
 tolerance (close, open, high, low 0.1%; live price 1%; volume 5%) is recorded as a conflict and the
 earlier source's value is kept.

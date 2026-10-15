@@ -52,15 +52,15 @@ class DataUnavailable(Exception):
 
 
 class CorrelatedMarketData:
-    def __init__(self, nse: Any, kite: Any, kite_rest: Any, cache: Any, quote_ttl: int = 60,
+    def __init__(self, nse: Any, kite: Any, cache: Any, quote_ttl: int = 60,
                  precedence: dict[str, list[str]] | None = None) -> None:
-        self.nse, self.kite, self.kite_rest, self.cache = nse, kite, kite_rest, cache
+        self.nse, self.kite, self.cache = nse, kite, cache
         self.quote_ttl = quote_ttl
         self.precedence = precedence
         self._coalesce = Coalescer()
 
     def _brokers(self) -> list[Any]:
-        return [b for b in (self.kite, self.kite_rest) if b is not None]
+        return [self.kite] if self.kite is not None else []
 
     @staticmethod
     def _status(provider: str, dataset: str, exc: BaseException) -> SourceStatus:

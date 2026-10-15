@@ -24,12 +24,16 @@ prediction of returns.
 
 ## Quick start (demo mode, no credentials)
 
-Requirements: [uv](https://docs.astral.sh/uv/) and Node 22+.
+Requirements: [uv](https://docs.astral.sh/uv/), Node 22+, and PostgreSQL — easiest through Docker
+Desktop (running, not paused), which the start script uses automatically.
 
 ```bash
 cp .env.example .env          # DATA_MODE=demo is the default
-./scripts/dev.sh              # mock MCP servers + API + web app
+./scripts/dev.sh              # PostgreSQL (Docker) + migrations + mock MCP servers + API + web app
 ```
+
+Full instructions, including Homebrew PostgreSQL and troubleshooting: `analysis/HOW_TO_RUN.md`.
+What every feature does: `analysis/REPOSITORY_GUIDE.md`. Architecture: `analysis/ARCHITECTURE.md`.
 
 Open <http://127.0.0.1:5173>. The first start ingests and scores the demo universe (about 15
 seconds). Demo mode runs the real connector code against local mock MCP servers that serve
@@ -50,7 +54,6 @@ seconds). Demo mode runs the real connector code against local mock MCP servers 
    - **Web research**: on by default in live mode through `ddgs` (DuckDuckGo-backed, no API key).
      Set `WEB_SEARCH_PROVIDER=brave` with `WEB_SEARCH_API_KEY` to use Brave instead, or `none` to turn
      it off. It is always off in demo mode, because demo symbols are fictional.
-   - **Kite Connect REST**: set `KITE_API_KEY` / `KITE_API_SECRET`.
 5. Edit `backend/data/reference/nse_universe.csv` to choose the instruments to track.
 
 Check what the real servers advertise and whether the adapters can use them:
@@ -75,7 +78,7 @@ production or public use.
 | Frontend unit tests | `cd frontend && npm test` |
 | Frontend type check and build | `cd frontend && npm run typecheck && npm run build` |
 | End-to-end tests (starts the demo stack if needed) | `cd frontend && npm run e2e` |
-| Integration tests on PostgreSQL and Redis | `TEST_DATABASE_URL=postgresql+asyncpg://… TEST_REDIS_URL=redis://… uv run pytest tests/api tests/services` (empty database, migrated with Alembic first) |
+| Integration tests on PostgreSQL and Redis | `TEST_DATABASE_URL=postgresql+psycopg://… TEST_REDIS_URL=redis://… uv run pytest tests/api tests/services` (empty database, migrated with Alembic first) |
 | Full stack in containers | `docker compose --profile demo up --build` |
 
 API reference: <http://127.0.0.1:8000/docs> while the API is running.
@@ -83,7 +86,7 @@ API reference: <http://127.0.0.1:8000/docs> while the API is running.
 ## Layout
 
 ```
-backend/app/connectors   MCP client, NSE and Kite adapters, Kite Connect, fundamentals files, search, LLM
+backend/app/connectors   MCP client, NSE MCP and Kite MCP adapters, fundamentals files, search, LLM
 backend/app/domain       pure deterministic maths: ratios, valuation, technicals, risk, scoring, themes, RRG
 backend/app/services     ingestion, correlation, metrics, themes, rotation, research, concall, alerts, jobs
 backend/app/api/v1       REST API
@@ -103,7 +106,6 @@ docs/                    architecture, methodology, data formats, operations
 | Browser end-to-end tests (demo stack, desktop and mobile) | 13 passing |
 | NSE MCP, real servers | Verified on 2026-10-12 with the application's connectors: tool discovery, quotes, paged history, index history, corporate actions, and a full pipeline run on 12 stocks |
 | Kite MCP, real server | Tool discovery, allowlist and instrument lookup verified. Quotes and history need an account login and were **not** verified against the real server; they are covered by mock contract tests only |
-| Kite Connect REST | Mocked contract tests only; needs a developer app |
 | Web search (`ddgs`) | Verified on 2026-10-12: research generated through the API for INFY and RELIANCE in live mode with real NSE quotes and retrieved sources; unit tests use a stand-in client |
 | Hugging Face LLM | Route, token and model id (`zai-org/GLM-5.3-Flash`) confirmed on 2026-10-12, but the account had no inference credits (HTTP 402), so no completion was produced. Behaviour with real model output is covered by mocked tests only |
 | PostgreSQL and Redis | Verified on 2026-10-12 against PostgreSQL 16.2 and Redis 6.2: the Alembic migration applies with no drift, 82 integration tests pass on the migrated schema with Redis as cache and lock store, and the standalone worker ran a scheduled job |

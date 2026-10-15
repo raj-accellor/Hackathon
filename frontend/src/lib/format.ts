@@ -76,7 +76,6 @@ export function ago(iso?: string | null): string {
 export const PROVIDER_LABEL: Record<string, string> = {
   nse_mcp: 'NSE MCP',
   kite_mcp: 'Kite MCP',
-  kite_connect: 'Kite Connect',
   fundamentals_file: 'Statements file',
   demo_generator: 'Demo generator',
 }

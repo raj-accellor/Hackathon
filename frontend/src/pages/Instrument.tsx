@@ -251,7 +251,7 @@ function PriceTab({ refId }: { refId: string }) {
                             <td>{fmtDate(c.date)}</td>
                             <td>{c.field}</td>
                             <td className="r num">{fmtNum(c.values.nse_mcp)}</td>
-                            <td className="r num">{fmtNum(c.values.kite_mcp ?? c.values.kite_connect)}</td>
+                            <td className="r num">{fmtNum(c.values.kite_mcp)}</td>
                             <td className="r num text-loss">{fmtNum(c.diff_pct, 2)}%</td>
                             <td>{PROVIDER_LABEL[c.chosen] ?? c.chosen}</td>
                           </tr>

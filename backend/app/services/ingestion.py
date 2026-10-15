@@ -172,7 +172,7 @@ async def ingest_prices(c: Container, s: AsyncSession, symbols: list[str] | None
         out["ok"] += 1
         out["conflicts"] += len(res.conflicts)
         out["warnings"] += len(res.warnings)
-        out["broker_filled_bars"] += sum(v for k, v in res.coverage.items() if k in ("kite_mcp", "kite_connect"))
+        out["broker_filled_bars"] += sum(v for k, v in res.coverage.items() if k == "kite_mcp")
     out["failures"] = out["failures"][:50]
     await s.commit()
     await c.cache.delete_prefix("quote:")

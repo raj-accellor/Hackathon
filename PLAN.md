@@ -17,6 +17,33 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 | 8 | Frontend | Done (9 pages) |
 | 9 | Verification, documentation | Done for what can run on this machine; see "Not verified" |
 
+## Changes and results, 2026-10-15
+
+Requested: PostgreSQL with psycopg; Kite through its MCP server only (no Kite Connect REST); fix
+start-up errors; documentation under `analysis/`.
+
+- Database: PostgreSQL via psycopg 3 is the default; asyncpg removed; `postgres://`, `postgresql://`
+  and `+asyncpg` URLs rewritten to `postgresql+psycopg://` (`?ssl=` → `?sslmode=`).
+- Kite Connect REST adapter, settings, route and tests removed; precedence is NSE MCP, then Kite MCP.
+- Start-up fixes, each with a test:
+  - `.env` values with trailing `# notes` (passed through by Docker Compose) or stray spaces broke settings;
+  - `AUTO_CREATE_SCHEMA=true` left tables without a migration record, so `alembic upgrade head` then
+    failed with "already exists" (reproduced on PostgreSQL); auto-created schemas are now recorded and
+    `preflight migrate` adopts unrecorded ones;
+  - the API now refuses an unmigrated or out-of-date database with the command to run;
+  - a paused Docker Desktop holding port 8000 made the API die with only "address already in use";
+    `scripts/dev.sh` now checks ports and names the holder and the fix;
+  - jobs left "running" by a stopped process are marked interrupted at start-up.
+- `scripts/dev.sh` now starts PostgreSQL/Redis with Docker Compose when local and down, applies
+  migrations, then starts the app.
+- Results: backend 281 passed + 3 Redis-only (284 on PostgreSQL 16 + Redis 6.2 through psycopg); lint
+  and types clean; frontend 14 passed, builds; browser tests 13 passed against a PostgreSQL-backed
+  stack; live mode on PostgreSQL started with real NSE MCP (21 + 15 tools) and returned a real INFY quote.
+- Not verified: Docker Compose containers (Docker Desktop was paused and cannot be resumed from the
+  command line); Kite quotes/history (needs the account holder's login); real model output (HTTP 402).
+- Documentation: `analysis/HOW_TO_RUN.md` (rewritten), `analysis/REPOSITORY_GUIDE.md` (new),
+  `analysis/ARCHITECTURE.md` (new), `analysis/RUN_AND_DEPLOY.md` (cloud deployment, updated).
+
 ## Test results (fresh run, 2026-10-12)
 
 - `cd backend && uv run pytest` → 271 passed, 3 skipped (Redis-only tests), 86% line coverage
@@ -25,7 +52,7 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 - `pip-audit` and `npm audit --omit=dev` → no known vulnerabilities
 - Live research through the API for INFY and RELIANCE: real NSE quotes plus `ddgs` sources, all citations grounded
 - `uv run ruff check .` → clean; `uv run mypy app` → clean (49 `type: ignore` comments cover typing gaps that were not resolved)
-- `uv run alembic upgrade head && uv run alembic check` on SQLite → applies, no drift
+- `alembic upgrade head` + `alembic check` on PostgreSQL 16 through psycopg → applies, no drift
 - `cd frontend && npm run typecheck && npm test && npm run build` → clean, 14 passed, builds
 - `npm run e2e` from a clean database → 13 passed (12 desktop, 1 mobile)
 - Live: `scripts/check_connectors.py --symbol INFY` and a full pipeline run on 12 NSE stocks + Nifty 50
@@ -33,8 +60,9 @@ Details: `README.md`, `docs/architecture.md`, `docs/methodology.md`, `docs/opera
 
 ## Decisions taken without a user answer
 
-- Broker: Zerodha Kite MCP, plus optional Kite Connect v3 REST behind the same interface.
-- Local runtime: SQLite and in-process cache; PostgreSQL/Redis through Compose.
+- Broker: Zerodha Kite MCP only (the Kite Connect REST path was removed on 2026-10-15 at the user's request).
+- Database: PostgreSQL through psycopg 3 (switched from SQLite/asyncpg on 2026-10-15 at the user's request);
+  Redis optional. SQLite remains only as the fast default for the unit test suite.
 - No LLM or search credentials: both integrations built with mocked contract tests and honest
   "unavailable" states; rule-based fallbacks for research and concall analysis.
 - Demo mode: same connector code against local mock MCP servers, synthetic data, fictional symbols.
@@ -55,7 +83,7 @@ index quotes from NSE, Kite lookup by exact `id`. Recorded schemas live in
 ## Not verified
 
 - Kite MCP quotes and history against the real server (needs the account holder's login).
-- Kite Connect REST and Brave search (no credentials). Web search through `ddgs` is verified.
+- Brave search (no key). Web search through `ddgs` is verified.
 - Hugging Face GLM output: the token, route and model id `zai-org/GLM-5.3-Flash` are confirmed, but the
   account returned HTTP 402 (no inference credits), so no real completion has been seen.
 - Docker Compose, the Dockerfiles and the nginx config (Docker not installed). PostgreSQL and Redis

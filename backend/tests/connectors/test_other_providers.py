@@ -1,12 +1,8 @@
-"""Mocked contract tests: Kite Connect REST, fundamentals files, web search, Hugging Face LLM.
+"""Mocked contract tests: fundamentals files, web search, Hugging Face LLM.
 No test here calls a paid or external service."""
 
-import gzip
-import hashlib
 import json
 import logging
-from datetime import date
-from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -14,93 +10,9 @@ from pydantic import BaseModel
 
 from app.connectors.base import ProviderUnavailable
 from app.connectors.fundamentals_file import FileFundamentalsProvider, FundamentalsValidationError
-from app.connectors.kite_connect import KiteConnectProvider
 from app.connectors.llm import HuggingFaceLLM, LLMBudgetExceeded, LLMInvalidOutput, LLMUnavailable
 from app.connectors.web_search import BraveSearch, DdgsSearch, NullSearch, build_search
 from app.devtools import demo_data as dd
-
-# ------------------------------------------------------------ Kite Connect
-
-CSV = ("instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange\n"
-       "408065,1594,INFY,INFOSYS,0,,0,0.05,1,EQ,NSE,NSE\n256265,1001,NIFTY 50,NIFTY 50,0,,0,0,0,EQ,INDICES,NSE\n")
-
-
-def kite(handler, token="tok"):
-    return KiteConnectProvider("key123", "secret456", token, transport=httpx.MockTransport(handler), min_quote_interval=0, min_history_interval=0)
-
-
-def test_kite_connect_unconfigured_reports_not_configured():
-    k = KiteConnectProvider(None, None, None)
-    assert k.capabilities()["history"]["supported"] is False
-    assert "not configured" in k.capabilities()["history"]["reason"]
-    assert k.health()["state"] == "not_configured"
-
-
-def test_kite_connect_login_url_and_checksum():
-    k = kite(lambda r: httpx.Response(500), token=None)
-    assert k.login_url() == "https://kite.zerodha.com/connect/login?v=3&api_key=key123"
-    assert k.checksum("reqtok") == hashlib.sha256(b"key123reqtoksecret456").hexdigest()
-
-
-async def test_kite_connect_token_exchange_sends_checksum_and_never_returns_tokens():
-    seen = {}
-
-    def h(req: httpx.Request) -> httpx.Response:
-        seen["path"], seen["form"], seen["version"] = req.url.path, parse_qs(req.content.decode()), req.headers.get("x-kite-version")
-        return httpx.Response(200, json={"status": "success", "data": {"access_token": "AT-SECRET", "public_token": "PT", "user_id": "AB1234", "user_name": "A B"}})
-
-    k = kite(h, token=None)
-    out = await k.exchange_token("reqtok")
-    assert seen["path"] == "/session/token" and seen["version"] == "3"
-    assert seen["form"]["checksum"] == [hashlib.sha256(b"key123reqtoksecret456").hexdigest()]
-    assert out == {"user_id": "AB1234", "user_name": "A B"}
-    assert "AT-SECRET" not in json.dumps(k.health()) and "AT-SECRET" not in repr(k)
-    assert (await k.auth_state())["state"] in ("authorized", "unknown", "unavailable")
-
-
-async def test_kite_connect_quotes_use_auth_header_and_parse_fields():
-    def h(req: httpx.Request) -> httpx.Response:
-        assert req.headers["authorization"] == "token key123:tok" and req.headers["x-kite-version"] == "3"
-        assert req.url.params.get_list("i") == ["NSE:INFY", "NSE:NOSUCH"]
-        return httpx.Response(200, json={"status": "success", "data": {"NSE:INFY": {
-            "instrument_token": 408065, "timestamp": "2026-10-09 15:30:00", "last_price": 1412.95, "volume": 4075699,
-            "ohlc": {"open": 1396, "high": 1421.75, "low": 1395.55, "close": 1389.65}, "upper_circuit_limit": 1528.6, "lower_circuit_limit": 1250.7}}})
-
-    qs = await kite(h).get_quotes(["INFY", "NOSUCH"])
-    assert set(qs) == {"INFY"}
-    f = qs["INFY"].fields
-    assert f["last_price"].value == 1412.95 and f["prev_close"].value == 1389.65 and f["last_price"].provider == "kite_connect"
-
-
-async def test_kite_connect_history_resolves_token_from_instrument_dump():
-    calls = []
-
-    def h(req: httpx.Request) -> httpx.Response:
-        calls.append(req.url.path)
-        if req.url.path == "/instruments/NSE":
-            return httpx.Response(200, content=gzip.compress(CSV.encode()), headers={"content-type": "text/csv"})
-        assert req.url.path == "/instruments/historical/408065/day"
-        assert req.url.params["from"] == "2026-10-01 00:00:00" and req.url.params["to"] == "2026-10-09 23:59:59"
-        return httpx.Response(200, json={"status": "success", "data": {"candles": [
-            ["2026-10-08T00:00:00+0530", 1390, 1400, 1380, 1389.65, 3000000], ["2026-10-09T00:00:00+0530", 1396, 1421.75, 1395.55, 1412.95, 4075699]]}})
-
-    k = kite(h)
-    res = await k.get_history("INFY", date(2026, 10, 1), date(2026, 10, 9))
-    assert res.frame["close"].tolist() == [1389.65, 1412.95] and res.provider == "kite_connect"
-    await k.get_history("INFY", date(2026, 10, 1), date(2026, 10, 9))
-    assert calls.count("/instruments/NSE") == 1, "the instrument dump is fetched once and cached"
-
-
-async def test_kite_connect_expired_token_is_login_required_and_rate_limit_is_unavailable():
-    k = kite(lambda r: httpx.Response(403, json={"status": "error", "message": "Incorrect `api_key` or `access_token`.", "error_type": "TokenException"}))
-    with pytest.raises(ProviderUnavailable) as e:
-        await k.get_quotes(["INFY"])
-    assert e.value.state == "login_required"
-    k2 = kite(lambda r: httpx.Response(429, json={"status": "error", "message": "Too many requests", "error_type": "NetworkException"}))
-    with pytest.raises(ProviderUnavailable) as e2:
-        await k2.get_quotes(["INFY"])
-    assert e2.value.state == "unavailable"
-
 
 # ------------------------------------------------------------ fundamentals files
 

@@ -1,7 +1,7 @@
 """Correlating values from several providers.
 
 Policy `reconcile-v1`
-- Precedence is per field. Default order: NSE MCP, then Kite MCP, then Kite Connect.
+- Precedence is per field. Default order: NSE MCP, then Kite MCP.
 - The first provider in precedence with a value supplies it. A lower-precedence provider only
   fills a gap; it never overrides a higher-precedence value.
 - When two providers both report a value and differ by more than the field tolerance, a conflict
@@ -19,7 +19,7 @@ import pandas as pd
 from app.domain.provenance import DataPoint
 
 VERSION = "reconcile-v1"
-DEFAULT_PRECEDENCE = ["nse_mcp", "kite_mcp", "kite_connect"]
+DEFAULT_PRECEDENCE = ["nse_mcp", "kite_mcp"]
 
 # Relative tolerance in percent. End-of-day closes should agree almost exactly; live prices are
 # sampled at different moments (NSE MCP is delayed by minutes), so they get a wider band.

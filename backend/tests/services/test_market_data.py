@@ -21,7 +21,7 @@ async def build(mock_mcp, nse_up=True, kite_up=True):
     kite = KiteMcpProvider(McpClient("kite_mcp", mock_mcp["kite"], allowed_tools=ALLOWED_TOOLS, transport=None if kite_up else dead, **kw), is_demo=True)
     await nse.start()
     await kite.start()
-    return CorrelatedMarketData(nse, kite, None, MemoryCache())
+    return CorrelatedMarketData(nse, kite, MemoryCache())
 
 
 def rng(symbol, days=320):

@@ -81,6 +81,21 @@ async def start_background(c: Container, kind: str, job_key: str, fn: JobFn, tri
     return run_id
 
 
+async def mark_interrupted(c: Container) -> int:
+    """Record runs left 'running' by a process that stopped mid-job. A run whose job lock is still
+    held (in this process, or in Redis for another process) is genuinely running and is left alone."""
+    async with c.sessions() as s:
+        stale = [r for r in (await s.scalars(select(JobRun).where(JobRun.status == "running"))).all()
+                 if not await c.cache.is_locked(f"job:{r.job_key}")]
+        for r in stale:
+            r.status, r.finished_at = "failed", c.clock.now()
+            r.error = "interrupted: the process stopped before this job finished; run it again"
+        await s.commit()
+    if stale:
+        log.info("jobs_marked_interrupted", count=len(stale))
+    return len(stale)
+
+
 async def last_runs(s: AsyncSession, limit: int = 50, kind: str | None = None) -> list[JobRun]:
     q = select(JobRun).order_by(JobRun.started_at.desc()).limit(limit)
     if kind:

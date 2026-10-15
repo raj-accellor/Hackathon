@@ -1,308 +1,470 @@
-# How to run Markets Intelligence
+# How to run and update Markets Intelligence
 
-This guide covers running the whole system from a clean checkout: demo mode, live mode, the
-optional integrations, the tests, and what to do when something does not start.
+The complete, step-by-step guide to installing, starting, stopping, updating and testing the
+system on your own machine. Cloud deployment is in [`RUN_AND_DEPLOY.md`](RUN_AND_DEPLOY.md);
+what the system does is in [`REPOSITORY_GUIDE.md`](REPOSITORY_GUIDE.md); how it is built is in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-All commands are run from the project root, `/Users/rajeshsanapala/Documents/Hackathon`, unless a
+All commands run from the project root, `/Users/rajeshsanapala/Documents/Hackathon`, unless a
 `cd` is shown.
 
----
+**Contents**
 
-## 1. What runs
-
-| Process | Port | What it is |
-|---|---|---|
-| Web app (Vite) | 5173 | The React interface. It talks only to the API |
-| API (FastAPI + scheduler) | 8000 | REST API, background jobs, schedule |
-| Mock MCP servers (demo mode only) | 9100, 9101, 9102 | Stand-ins for NSE bhavcopy, NSE CM market and Kite, serving synthetic data |
-
-`scripts/dev.sh` starts all of them and stops them together when you press Ctrl+C.
-
-Data is stored in `backend/var/app.db` (SQLite). Uploaded statement files go to
-`backend/var/fundamentals/`.
-
----
-
-## 2. Prerequisites
-
-| Tool | Version used | Check |
-|---|---|---|
-| uv (Python package manager) | 0.12 | `uv --version` |
-| Node.js | 22 or newer | `node --version` |
-| npm | comes with Node | `npm --version` |
-
-uv downloads the right Python (3.12+) by itself. Docker is **not** needed for local runs.
-
-Dependencies are declared in `backend/pyproject.toml` and pinned in `backend/uv.lock` (backend) and
-in `frontend/package.json` / `package-lock.json` (frontend). `backend/requirements.txt` and
-`backend/requirements-dev.txt` are exported from the lockfile for use with plain `pip`:
-
-```bash
-cd backend && python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt     # or requirements.txt for runtime only
-uvicorn app.main:app --port 8000        # instead of `uv run uvicorn ...`
-```
-
-After changing dependencies in `pyproject.toml`, regenerate them with `./scripts/export-requirements.sh`.
-
-One-time install of dependencies:
-
-```bash
-cd backend && uv sync && cd ..
-cd frontend && npm install && cd ..
-```
-
-(`scripts/dev.sh` also installs frontend packages if `node_modules` is missing, and `uv run`
-installs backend packages on first use, so this step is optional.)
+1. [What runs, and on which ports](#1-what-runs-and-on-which-ports)
+2. [One-time setup](#2-one-time-setup)
+3. [PostgreSQL (the database)](#3-postgresql-the-database)
+4. [Start everything with one command](#4-start-everything-with-one-command)
+5. [Demo mode and live mode](#5-demo-mode-and-live-mode)
+6. [Live mode step by step](#6-live-mode-step-by-step)
+7. [Optional integrations](#7-optional-integrations)
+8. [Start each part separately](#8-start-each-part-separately)
+9. [Run the whole stack in Docker](#9-run-the-whole-stack-in-docker)
+10. [Look at the data](#10-look-at-the-data)
+11. [Update the system](#11-update-the-system)
+12. [Trigger jobs by hand, and the schedule](#12-trigger-jobs-by-hand-and-the-schedule)
+13. [Run the tests](#13-run-the-tests)
+14. [Troubleshooting](#14-troubleshooting)
+15. [Configuration reference](#15-configuration-reference)
 
 ---
 
-## 3. Run in demo mode (no credentials needed)
+## 1. What runs, and on which ports
 
-```bash
-cp .env.example .env      # only the first time; DATA_MODE=demo is the default
-./scripts/dev.sh
-```
+| Part | Port | Needed? | What it is |
+|---|---|---|---|
+| Web app (Vite dev server) | 5173 | Yes | The React interface. Talks only to the API |
+| API (FastAPI) | 8000 | Yes | REST API; also runs the scheduled jobs unless a worker does |
+| PostgreSQL 16 | 5432 | Yes | The database. Driver: **psycopg 3** |
+| Redis 7 | 6379 | Optional | Shared cache and job locks. Without it the API uses an in-process cache |
+| Worker | — | Optional | Runs the schedule in its own process instead of the API |
+| Mock MCP servers | 9100–9102 | Demo mode only | Stand-ins for NSE bhavcopy, NSE CM market and Kite, serving synthetic data |
 
-Then open **http://127.0.0.1:5173**.
-
-What happens on the first start:
-
-1. The three mock MCP servers start.
-2. The API creates the database tables, loads the 59 demo instruments and 70 built-in themes.
-3. A background "full refresh" job ingests prices over MCP, loads demo financials, computes
-   metrics and scores, builds the sector rotation snapshot and the first theme snapshots.
-   This takes about 15 seconds; the Overview page shows "No market data yet" until it finishes.
-
-Everything in demo mode is **synthetic**. Symbols start with `DEMO`, and an orange banner says so
-on every page. The demo data deliberately includes a stock split, a few bars the NSE mock lacks,
-and two prices where the broker mock disagrees, so the correlation features have something to show.
-
-Stop everything with **Ctrl+C** in the terminal running `dev.sh`.
-
-### A quick tour to confirm it works
-
-| Page | What to look for |
-|---|---|
-| Overview | Benchmark, sector table with rotation quadrants, top scores |
-| Screener | Add a filter such as ROE at least 15; sort a column; Export CSV |
-| Themes | Open "Low realized volatility"; see Members, Methodology, Excluded, Snapshot history |
-| Instrument → `DEMOAUTO01` → Price and provenance | Two recorded source disagreements of 2% |
-| Instrument → `DEMOIT03` → Price and provenance | A split under "Corporate actions applied" |
-| Sector rotation | The rotation graph and its companion table |
-| Research board → pick `DEMOIT02` → Generate research | A rule-based summary that states the model and web search were not used |
-| Concall follow-through → `DEMOIT01` → Run analysis | A follow-through score with per-commitment verdicts |
-| Data status | Connector states, which tools are blocked, the schedule, job history |
+Market data comes from **MCP servers only**: NSE MCP (primary) and Zerodha Kite MCP (fills gaps
+and cross-checks). There is no Kite Connect REST integration.
 
 ---
 
-## 4. Run in live mode (real NSE and Kite data)
-
-### 4.1 Configure
-
-Edit `.env`:
+## 2. One-time setup
 
 ```bash
-DATA_MODE=live
+brew install uv node                 # uv = Python package manager, node = JavaScript runtime (22+)
+uv --version && node --version
 ```
 
-The three MCP URLs are already filled in from `.env.example`:
+uv downloads the right Python (3.12+) itself. For the database you need **one** of: Docker
+Desktop (recommended; used automatically) or PostgreSQL 16 from Homebrew. See section 3.
+
+Create your configuration file (the start script also does this if it is missing):
 
 ```bash
-NSE_BHAVCOPY_MCP_URL=https://mcp.nseindia.in/bhavcopy/cm/mcp
-NSE_CM_MARKET_MCP_URL=https://mcp.nseindia.in/cmmkt/mcp
-BROKER_MCP_URL=https://mcp.kite.trade/mcp
+cp .env.example .env                 # never commit .env
 ```
 
-Demo and live data never share a database. When you switch mode, either let the app remove the
-other mode's instruments on start, or start clean:
+Dependencies are pinned in lockfiles: `backend/uv.lock` (Python) and `frontend/package-lock.json`
+(JavaScript). `backend/requirements.txt` and `backend/requirements-dev.txt` are generated from the
+lockfile for plain `pip`. Nothing needs installing by hand: the start script runs `uv sync` and
+`npm install`.
+
+---
+
+## 3. PostgreSQL (the database)
+
+The default connection, in `.env`:
 
 ```bash
-rm -f backend/var/app.db backend/var/app.db-wal backend/var/app.db-shm
+DATABASE_URL=postgresql+psycopg://markets:markets@localhost:5432/markets
+POSTGRES_PASSWORD=markets
+AUTO_CREATE_SCHEMA=false
 ```
 
-### 4.2 Choose what to track
+`postgres://…`, `postgresql://…` and `postgresql+asyncpg://…` URLs are accepted and rewritten to
+`postgresql+psycopg://…` automatically. For a managed database add `?sslmode=require`.
 
-Edit `backend/data/reference/nse_universe.csv`. One row per instrument:
+The tables are created and upgraded by **Alembic migrations**, never by hand. The start script
+runs them for you. Pick one way to provide PostgreSQL:
 
+### Option A — Docker Desktop (recommended, automatic)
+
+1. Start Docker Desktop. If it shows **Paused**, choose **Resume** in the Whale menu: a paused
+   Docker cannot start containers, and its old port mappings stay reserved (see section 14).
+2. Run `./scripts/dev.sh`. When nothing answers on `localhost:5432` it runs
+   `docker compose up -d --wait postgres` (and `redis` if `REDIS_URL` points at localhost).
+
+Manual equivalent:
+
+```bash
+docker compose up -d --wait postgres redis   # data is kept in the `pgdata` Docker volume
+docker compose ps                            # both should be "healthy"
+docker compose stop postgres redis           # stop them (data kept)
+docker compose down -v                       # stop and DELETE the database volume
 ```
-symbol,name,sector,industry,sector_kind,instrument_type,sector_index_symbol,isin
+
+### Option B — Homebrew PostgreSQL
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+psql -d postgres -c "CREATE ROLE markets LOGIN PASSWORD 'markets';"
+createdb -O markets markets
 ```
 
-It ships with about 50 large NSE stocks and 8 indices. Fewer rows means a faster first refresh.
-The sector labels in this file are a manually maintained reference, not exchange data.
+Optional Redis: `brew install redis && brew services start redis`.
 
-### 4.3 Check the real servers first (optional but useful)
+### Option C — any other PostgreSQL 14+
+
+Set `DATABASE_URL` in `.env` to it (with `?sslmode=require` if it needs TLS). The user must be
+able to create tables in that database.
+
+### Check the database without starting the app
 
 ```bash
 cd backend
-DATA_MODE=live uv run python ../scripts/check_connectors.py --symbol INFY
-cd ..
+uv run python -m app.devtools.preflight db      # e.g. "database: PostgreSQL 16.x at postgresql+psycopg://markets:***@localhost:5432/markets"
+uv run python -m app.devtools.preflight redis   # "redis: ok …" or "not configured (in-process cache)"
+uv run python -m app.devtools.preflight migrate # apply migrations (safe to repeat)
 ```
 
-This uses the application's own connectors to list the tools each server advertises, show which
-capabilities map to which tool, print the broker session state, and fetch one real quote and some
-history. It makes read-only calls only.
+---
 
-### 4.4 Start and refresh
+## 4. Start everything with one command
 
 ```bash
 ./scripts/dev.sh
 ```
 
-Open **http://127.0.0.1:5173/status** (Data status):
+What it does, in order, stopping with a clear message at the first problem:
 
-1. **Check broker session.** If it says login is needed, open the Kite link shown, approve access
-   in Kite, then check again. Access is read-only market data; this app cannot place orders and
-   never sees your password. The Kite session expires daily.
-2. **Refresh all data.** Progress appears under Job history.
+1. Creates `.env` from `.env.example` if missing.
+2. Checks that ports 8000 (API) and 5173 (web) are free, and says who holds them if not.
+3. `uv sync` for the backend.
+4. Checks PostgreSQL; starts it with Docker Compose if it is local and not running.
+5. Checks Redis (if `REDIS_URL` is set); starts it with Docker Compose if local, otherwise the API
+   uses its in-process cache.
+6. Applies migrations (`preflight migrate`). If an older start-up created tables without recording
+   a migration, it records them first instead of failing with "table already exists".
+7. Demo mode: starts the mock MCP servers on 9100–9102.
+8. Starts the API on 8000 and the web app on 5173.
 
-How long the first live refresh takes: the NSE history tool returns three months per call, so
-three years of history is about 12 calls per stock. In testing, 12 stocks with one year of history
-took a little over three minutes. To shorten it, set `HISTORY_YEARS=1` in `.env` or trim the
-universe file. Later refreshes only fetch recent bars.
+Open **http://127.0.0.1:5173**. On the first start the API fills the database in the background
+(about 15 seconds in demo mode; several minutes in live mode). Until then the Overview says
+"No market data yet"; **Data status → Job history** shows progress.
 
-The app works without the Kite login: it runs on NSE data alone and marks the broker source as
-"login required".
+**Stop:** Ctrl+C stops the API, web app and mock servers. PostgreSQL and Redis containers keep
+running; stop them with `docker compose stop postgres redis`.
 
-### 4.5 What live mode shows without the optional pieces
-
-| Missing piece | Effect on screen |
-|---|---|
-| Financial statements | Fundamentals and valuation are "Not available"; scores are marked incomplete or "Insufficient data" |
-| Kite login | Broker shown as "login required"; no gap filling or cross-checking |
-| Language model | Research and concall analysis use rule-based fallbacks and say so |
-| Web search switched off or rate-limited | News and catalysts are empty, with a notice that web research is unavailable |
+**Another API port:** `API_PORT=8001 ./scripts/dev.sh` (the web app follows automatically).
 
 ---
 
-## 5. Optional integrations
+## 5. Demo mode and live mode
 
-All are set in `.env`. Restart `dev.sh` after changing it. Never commit `.env`.
+Set by `DATA_MODE` in `.env`.
+
+| | `demo` (default in `.env.example`) | `live` |
+|---|---|---|
+| Market data | Local mock MCP servers, synthetic | Real NSE MCP and Kite MCP |
+| Symbols | Fictional, start with `DEMO` | Real NSE symbols from `backend/data/reference/nse_universe.csv` |
+| Financial statements | Generated synthetic figures | Only what you upload (section 7) |
+| Concall transcripts | Two synthetic transcripts for `DEMOIT01` | Only what you upload |
+| Web research | Always off | `ddgs` by default |
+| Labelling | Orange "Demo mode" banner on every page | None |
+
+Demo and live data never mix: switching mode removes the other mode's instruments on the next
+start. To keep both, use two databases (two `DATABASE_URL` values).
+
+### A quick tour (demo mode)
+
+| Page | What to check |
+|---|---|
+| Overview | Benchmark, sector table with rotation quadrants, top scores, watchlist highlights |
+| Screener | Add a filter (ROE at least 15), sort a column, Export CSV |
+| Themes | "Low realized volatility": members, methodology, exclusions, snapshot history |
+| Instrument `DEMOAUTO01` → Price and provenance | Two recorded NSE-vs-broker disagreements of 2% |
+| Instrument `DEMOIT03` → Price and provenance | A split under "Corporate actions applied" |
+| Sector rotation | The rotation graph and its table |
+| Research board → `DEMOIT02` → Generate research | Rule-based summary that says the model and web search were not used |
+| Concall follow-through → `DEMOIT01` → Run analysis | Score with a verdict per commitment |
+| Data status | Connector states, blocked broker tools, schedule, job history |
+
+---
+
+## 6. Live mode step by step
+
+1. In `.env`: `DATA_MODE=live`. The MCP URLs are already set:
+   ```bash
+   NSE_BHAVCOPY_MCP_URL=https://mcp.nseindia.in/bhavcopy/cm/mcp
+   NSE_CM_MARKET_MCP_URL=https://mcp.nseindia.in/cmmkt/mcp
+   BROKER_MCP_URL=https://mcp.kite.trade/mcp
+   ```
+2. Choose the instruments: edit `backend/data/reference/nse_universe.csv`
+   (`symbol,name,sector,industry,sector_kind,instrument_type,sector_index_symbol,isin`). Fewer
+   rows means a faster first refresh. The sector labels are a manually maintained reference.
+3. Optional check of the real servers with the app's own connectors:
+   ```bash
+   cd backend && DATA_MODE=live uv run python ../scripts/check_connectors.py --symbol INFY && cd ..
+   ```
+4. `./scripts/dev.sh`
+5. **Kite MCP login** (for broker gap-filling and cross-checks): open **Data status → Check broker
+   session**, open the Kite link, approve read-only access in Kite, then check again. The approval
+   belongs to the running API process and Kite expires it daily; repeat after a restart. Without
+   it the system runs on NSE data alone and shows the broker as "login required".
+6. **Data status → Refresh all data**. NSE's history tool returns three months per call, so three
+   years for one stock is about 12 calls; 12 stocks with one year took a little over three minutes
+   in testing. Use `HISTORY_YEARS=1` or a shorter universe to go faster. Later refreshes fetch
+   only recent bars.
+
+The NSE MCP servers are sometimes slow or return 502/504. Calls retry, then the source shows
+"unavailable" with the reason; stored data keeps being served.
+
+What live mode shows without the optional pieces:
+
+| Missing | On screen |
+|---|---|
+| Financial statements | Fundamentals and valuation "Not available"; scores incomplete or "Insufficient data" |
+| Kite login | Broker "login required"; no gap filling or cross-checking |
+| Language model | Research and concall analysis use rule-based fallbacks and say so |
+| Web search off or rate-limited | No news or catalysts, with a notice that web research was unavailable |
+
+---
+
+## 7. Optional integrations
+
+Set in `.env`, then restart `./scripts/dev.sh`.
 
 ### Financial statements
 
-Neither NSE MCP nor Kite provides them. Upload one JSON document per company:
+No MCP server provides them. Upload one JSON document per company (format in
+`docs/data-formats.md`):
 
 ```bash
 curl -X PUT "http://127.0.0.1:8000/api/v1/instruments/NSE:INFY/financials" \
-  -H "Content-Type: application/json" \
-  --data @infy_statements.json
+  -H "Content-Type: application/json" --data @infy_statements.json
 ```
 
-The file format is in `docs/data-formats.md`. After an upload, metrics are recomputed
-automatically.
+Metrics are recomputed straight after an upload.
 
 ### Language model (GLM through Hugging Face)
 
 ```bash
 LLM_ENABLED=true
 HF_TOKEN=<your token>
-HF_MODEL_ID=zai-org/GLM-5.3-Flash     # the exact id the Hugging Face router lists
-# HF_ENDPOINT_URL=<only if you use a dedicated Inference Endpoint>
+HF_MODEL_ID=zai-org/GLM-5.3-Flash
+# HF_ENDPOINT_URL=          # only for a dedicated Inference Endpoint; with or without /v1
 ```
 
-After restarting, Data status → Language model shows whether the model id was verified against
-your account, the provider's own error if not, and similar ids if the id looks mistyped.
-`LLM_DAILY_BUDGET` caps calls per day.
-
-The Hugging Face account needs Inference Providers credits. Without them the provider answers
-HTTP 402 ("no remaining credits") and the app falls back to rule-based summaries, saying so.
+Data status → Language model shows whether the id was verified, the provider's error if not, and
+similar ids if it looks mistyped. The Hugging Face account needs Inference Providers credits;
+without them the provider answers HTTP 402 and the app falls back to rule-based summaries.
+`LLM_DAILY_BUDGET` and `LLM_DAILY_TOKEN_BUDGET` cap daily use.
 
 ### Web research
 
-On by default in live mode through `ddgs` (DuckDuckGo-backed search, no API key needed):
-
-```bash
-WEB_SEARCH_PROVIDER=ddgs        # default; use `none` to turn web research off
-# WEB_SEARCH_PROVIDER=brave     # alternative, needs WEB_SEARCH_API_KEY
-```
-
-It is always off in demo mode, because demo symbols are fictional. `ddgs` uses public search
-endpoints that rate-limit; when a search fails the research board says web research was
-unavailable rather than showing no news.
-
-### Kite Connect v3 REST (second broker path)
-
-```bash
-KITE_API_KEY=<key>
-KITE_API_SECRET=<secret>
-```
-
-After the Kite login redirect gives you a `request_token`:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/sources/kite-connect/session \
-  -H "Content-Type: application/json" -d '{"request_token": "<token>"}'
-```
+`WEB_SEARCH_PROVIDER=ddgs` (default, no key) or `brave` with `WEB_SEARCH_API_KEY`, or `none`.
+Always off in demo mode. `ddgs` uses public search endpoints that rate-limit; a failed search is
+reported as "web research unavailable", never as "no news".
 
 ### Require a token for the API
 
-```bash
-API_AUTH_TOKEN=<a long random value>
-```
-
-Then enter the same value under Data status → Access in the web app.
+`API_AUTH_TOKEN=<long random value>` (`openssl rand -hex 32`), then enter the same value under
+Data status → Access in the web app.
 
 ### Concall transcripts
 
-In the web app: Concall follow-through → choose a company → Add a transcript (PDF, text file or
-pasted text). Upload two consecutive quarters, then Run analysis.
+Concall follow-through → choose a company → Add a transcript (PDF, text file or pasted text).
+Upload two consecutive quarters, then Run analysis.
 
 ---
 
-## 6. Running the parts separately
+## 8. Start each part separately
 
-Useful when you want separate logs or are debugging one part.
+Use separate terminals when you want separate logs or are debugging one part. Start in this order.
 
 ```bash
-# Terminal 1: mock MCP servers (demo mode only)
+# 1. Database (and Redis) — section 3
+docker compose up -d --wait postgres redis
+
+# 2. Migrations
+cd backend && uv run python -m app.devtools.preflight migrate
+
+# 3. Demo mode only: mock MCP servers on 9100, 9101, 9102
 cd backend && uv run python -m app.devtools.mock_mcp --port 9100
+#    add --no-auto-login to make the mock broker require the login flow like real Kite
 
-# Terminal 2: API
-cd backend && DATA_MODE=demo uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+# 4. API (also runs the schedule)
+cd backend && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+curl http://127.0.0.1:8000/health/ready        # {"status":"ready", ...}
 
-# Terminal 3: web app
-cd frontend && npm run dev -- --host 127.0.0.1
+# 4b. Or: API without the schedule + a separate worker (use Redis so they share locks)
+cd backend && SCHEDULER_ENABLED=false uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd backend && uv run python -m app.workers.run
+
+# 5. Web app
+cd frontend && npm install && npm run dev -- --host 127.0.0.1
+#    another API port: VITE_API_PROXY=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1
 ```
 
-To exercise the broker login flow in demo mode, start the mock with `--no-auto-login`; the Data
-status page will then show a (local) authorisation link.
+API reference while running: **http://127.0.0.1:8000/docs**.
 
-Run the scheduler as its own process instead of inside the API:
-
-```bash
-cd backend && SCHEDULER_ENABLED=false uv run uvicorn app.main:app --port 8000   # API without schedule
-cd backend && uv run python -m app.workers.run                                   # worker with schedule
-```
-
-With SQLite this is fine for experiments; for a real split set `REDIS_URL` so both processes share
-locks and cache.
+The API refuses to start against a database whose schema is missing or behind the code, with a
+message naming the command to run. Prefer `preflight migrate` over `alembic upgrade head`: it
+also repairs a database whose tables were created without a migration record.
 
 ---
 
-## 7. Triggering jobs by hand
+## 9. Run the whole stack in Docker
 
 ```bash
-# Everything, in order: instruments, prices, fundamentals, metrics, rotation, alerts
-curl -X POST http://127.0.0.1:8000/api/v1/jobs/refresh-all
-
-# Sector rotation only
-curl -X POST http://127.0.0.1:8000/api/v1/sector-rotation/refresh
-
-# One theme (id or slug)
-curl -X POST http://127.0.0.1:8000/api/v1/themes/price-momentum/refresh
-
-# Follow a job
-curl http://127.0.0.1:8000/api/v1/jobs/1
-curl http://127.0.0.1:8000/api/v1/jobs
+cp .env.example .env
+docker compose --profile demo up -d --build     # demo: includes the mock MCP servers
+# live data instead: set DATA_MODE=live in .env, then
+docker compose up -d --build
 ```
 
-Refresh triggers are limited to 3 per minute and research requests to 6 per minute by default.
+| Service | What | Address |
+|---|---|---|
+| `postgres` | PostgreSQL 16, volume `pgdata` | 127.0.0.1:5432 |
+| `redis` | Redis 7 (no persistence) | 127.0.0.1:6379 |
+| `migrate` | Runs `alembic upgrade head` once, then exits | — |
+| `api` | API, scheduler off | 127.0.0.1:8000 |
+| `worker` | Runs the schedule | — |
+| `web` | nginx serving the built app, proxying `/api` | http://127.0.0.1:8080 |
+| `mock-mcp` | Demo only (`--profile demo`) | internal |
 
-Default schedule (India time, changeable in `.env`):
+Inside Compose the API and worker always use `postgresql+psycopg://markets:${POSTGRES_PASSWORD}@postgres:5432/markets`
+and `redis://redis:6379/0`, whatever `.env` says for those two settings.
 
-| Job | When |
+One service at a time:
+
+```bash
+docker compose up -d --wait postgres redis
+docker compose run --rm migrate
+docker compose --profile demo up -d mock-mcp     # demo only
+docker compose up -d api worker web
+docker compose logs -f api
+docker compose down                              # stop all, keep data
+```
+
+The Compose stack publishes ports 8000 and 8080. Stop it (`docker compose down`) before using
+`./scripts/dev.sh`, which needs port 8000; or run dev.sh with `API_PORT=8001`.
+
+> **Verification status:** the Compose file has been checked statically and the application has
+> been verified on PostgreSQL 16 and Redis outside Docker, but the containers have not been built
+> and run on this machine (Docker Desktop was paused during the work).
+
+---
+
+## 10. Look at the data
+
+```bash
+docker compose exec postgres psql -U markets -d markets        # database in Docker
+psql postgresql://markets:markets@localhost:5432/markets        # from the Mac (Homebrew psql)
+```
+
+GUI tools (DBeaver, TablePlus, pgAdmin, Postico): host `127.0.0.1`, port `5432`, user `markets`,
+database `markets`, password from `POSTGRES_PASSWORD`.
+
+`psql` basics: `\dt` tables, `\d price_bars` columns, `\x` expanded rows, `\q` quit.
+
+| Table | Holds |
+|---|---|
+| `instruments`, `instrument_identifiers` | Symbol, exchange, ISIN, sector, broker instrument token |
+| `price_bars` | Daily OHLCV (split-adjusted) with `provider`, `adjustment`, `retrieved_at` |
+| `corporate_actions` | Splits, bonuses, dividends from NSE |
+| `source_conflicts` | Where NSE and Kite disagreed beyond tolerance, and which value was used |
+| `data_source_records` | Lineage: every provider call, status, rows, reason |
+| `financial_statement_periods` | Uploaded statements per period (INR crore) |
+| `metric_snapshots` | Every computed metric and score per instrument (`is_latest` = current) |
+| `themes`, `theme_versions`, `theme_snapshots`, `theme_snapshot_constituents` | Theme definitions and immutable monthly results |
+| `sector_rotation_snapshots` | Rotation graph results, one per 12-hour slot |
+| `research_reports`, `research_sources` | Research boards and the sources they cited |
+| `concall_transcripts`, `concall_analyses` | Uploaded transcripts and follow-through results |
+| `watchlists`, `watchlist_items`, `alerts`, `alert_events` | Lists, alerts and notification history |
+| `job_runs`, `audit_events` | Job history; user and admin actions |
+| `alembic_version` | Which migration the database is at |
+
+```sql
+SELECT id, kind, status, started_at, finished_at, error FROM job_runs ORDER BY id DESC LIMIT 10;
+
+SELECT i.symbol, p.date, p.close, p.volume, p.provider
+FROM price_bars p JOIN instruments i ON i.id = p.instrument_id
+WHERE i.symbol = 'INFY' ORDER BY p.date DESC LIMIT 5;          -- 'DEMOIT01' in demo mode
+
+SELECT i.symbol, i.sector, m.overall_score, m.as_of
+FROM metric_snapshots m JOIN instruments i ON i.id = m.instrument_id
+WHERE m.is_latest ORDER BY m.overall_score DESC NULLS LAST LIMIT 10;
+
+SELECT * FROM source_conflicts ORDER BY id DESC LIMIT 10;
+```
+
+Backup and restore:
+
+```bash
+docker compose exec -T postgres pg_dump -U markets -Fc markets > markets_$(date +%F).dump
+docker compose exec -T postgres pg_restore -U markets -d markets --clean --if-exists < markets_2026-10-15.dump
+```
+
+---
+
+## 11. Update the system
+
+### Get new code
+
+```bash
+git pull
+./scripts/dev.sh        # syncs Python packages, installs new npm packages, applies new migrations
+```
+
+If `frontend/package-lock.json` changed and the web app fails to start, run
+`cd frontend && npm install` once.
+
+### Change the database schema
+
+1. Edit the models in `backend/app/db/models.py`.
+2. Generate a migration against an up-to-date database:
+   ```bash
+   cd backend
+   uv run python -m app.devtools.preflight migrate
+   uv run alembic revision --autogenerate -m "describe the change"
+   ```
+3. Review the new file in `backend/migrations/versions/`, then apply it:
+   `uv run python -m app.devtools.preflight migrate`.
+4. Confirm models and migrations agree: `uv run alembic check` → "No new upgrade operations detected."
+
+### Change Python or JavaScript dependencies
+
+```bash
+cd backend && uv add <package>          # or: uv remove <package>; dev-only: uv add --dev <package>
+../scripts/export-requirements.sh        # regenerate requirements*.txt from uv.lock
+cd ../frontend && npm install <package>
+```
+
+### Change what is tracked or how often
+
+- Instruments: `backend/data/reference/nse_universe.csv`, then **Refresh all data**.
+- Schedules: the `*_CRON` settings in `.env` (cron syntax, India time), then restart.
+- Rate limits, history length, cache lifetimes: see section 15.
+
+### Re-fetch everything
+
+**Data status → Refresh all data**, or `curl -X POST http://127.0.0.1:8000/api/v1/jobs/refresh-all`.
+Theme snapshots already taken are never changed; a refresh in the same month adds a new revision.
+
+---
+
+## 12. Trigger jobs by hand, and the schedule
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/jobs/refresh-all              # everything, in order
+curl -X POST http://127.0.0.1:8000/api/v1/sector-rotation/refresh       # rotation only
+curl -X POST http://127.0.0.1:8000/api/v1/themes/price-momentum/refresh # one theme
+curl http://127.0.0.1:8000/api/v1/jobs/1                                # follow a job
+```
+
+Refresh triggers are limited to 3 per minute and research to 6 per minute by default. Only one run
+of a given job runs at a time; a second request while one is running is recorded as "skipped". A
+job that was running when the process stopped is marked "interrupted" at the next start.
+
+| Job | Default schedule (India time) |
 |---|---|
 | Prices, fundamentals reload, metrics | 19:30 on weekdays |
 | Sector rotation | Every 12 hours |
@@ -312,110 +474,90 @@ Default schedule (India time, changeable in `.env`):
 
 ---
 
-## 8. Running the tests
+## 13. Run the tests
 
 ```bash
-# Backend: unit, contract, integration, security, scheduler (about 20 seconds)
 cd backend
-uv run pytest
-uv run ruff check .
-uv run mypy app
+uv run pytest                    # ~280 tests, about 20 s; SQLite + mock MCP servers, no network
+uv run ruff check . && uv run mypy app
 
-# Frontend
 cd ../frontend
-npm run typecheck
-npm test
-npm run build
-
-# Browser end-to-end tests. Starts the demo stack itself if it is not already running.
-npx playwright install chromium     # first time only
-npm run e2e
+npm run typecheck && npm test && npm run build
+npx playwright install chromium  # first time only
+npm run e2e                      # browser tests; starts the demo stack if it is not running
 ```
 
-The backend tests start their own mock MCP servers on free ports and use a temporary database, so
-they do not touch `backend/var/app.db` and can run while the app is running.
-
-To run the integration tests on PostgreSQL and Redis instead of SQLite and the in-process cache,
-point them at an **empty** database that has been migrated first:
+Run the integration tests on **PostgreSQL and Redis** (empty, migrated database):
 
 ```bash
 cd backend
-export TEST_DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/markets_test
-DATABASE_URL=$TEST_DATABASE_URL uv run alembic upgrade head
-TEST_REDIS_URL=redis://localhost:6379/15 uv run pytest tests/api tests/services
+export TEST_DATABASE_URL=postgresql+psycopg://markets:markets@localhost:5432/markets_test
+createdb -h localhost -U markets markets_test        # or: docker compose exec postgres createdb -U markets markets_test
+DATABASE_URL=$TEST_DATABASE_URL uv run python -m app.devtools.preflight migrate
+TEST_REDIS_URL=redis://localhost:6379/15 uv run pytest
 ```
 
-Security audits: `uvx pip-audit --disable-pip --no-deps -r requirements.txt` and, in `frontend`,
-`npm audit --omit=dev`.
+Security audits: `uvx pip-audit --disable-pip --no-deps -r requirements.txt` (backend) and
+`npm audit --omit=dev` (frontend).
 
 ---
 
-## 9. Database migrations
+## 14. Troubleshooting
 
-Local and test runs create tables automatically (`AUTO_CREATE_SCHEMA=true`). For a managed
-database, turn that off and use Alembic:
-
-```bash
-cd backend
-uv run alembic upgrade head                                   # apply
-uv run alembic revision --autogenerate -m "describe change"   # after changing models
-uv run alembic check                                          # confirm models and migrations match
-```
-
----
-
-## 10. Running with Docker
-
-```bash
-cp .env.example .env
-docker compose --profile demo up --build      # demo: includes the mock MCP servers
-# or, for live data: set DATA_MODE=live in .env, then
-docker compose up --build
-```
-
-Web app on http://127.0.0.1:8080, API on http://127.0.0.1:8000. This starts PostgreSQL, Redis, a
-one-off migration, the API, a worker and nginx.
-
-**This path has not been run.** Docker was not installed on the machine where the project was
-built, so the Compose file, Dockerfiles and nginx config are untested; expect to fix small issues
-the first time. The application itself has been verified on PostgreSQL 16 and Redis 6 outside
-Docker, including the migration and the separate worker process.
-
----
-
-## 11. Troubleshooting
-
-| Symptom | Likely cause and fix |
+| Symptom | Cause and fix |
 |---|---|
-| Overview says "No market data yet" | The first refresh is still running (about 15 s in demo). Check Data status → Job history |
-| `address already in use` on 8000, 5173 or 9100 | A previous run is still alive: `lsof -ti :8000,:5173,:9100,:9101,:9102 \| xargs kill` |
-| Web app shows "The API could not be reached" | The API is not running or is on another port. `curl http://127.0.0.1:8000/health/ready` |
-| Demo data appears in live mode, or the reverse | Stop, delete `backend/var/app.db*`, start again |
-| NSE sources show "unavailable" with a 504, 502 or timeout | The NSE servers are intermittently down. Stored data keeps being served. Use "Reconnect and re-read advertised tools" and refresh later |
-| Broker shows "login required" | Data status → Check broker session → open the link → approve → check again |
-| Scores say "Insufficient data" in live mode | No financial statements uploaded, or less history than a metric needs. The page states which pillars lack data |
-| 12-month return or 1-year volatility missing | Fewer than 253 daily bars. Use `HISTORY_YEARS=2` or more and run a refresh |
-| "Too many refresh requests" | Rate limit. Wait the number of seconds shown |
-| Research says the language model was not used | `LLM_ENABLED`, `HF_TOKEN` or `HF_MODEL_ID` not set, a wrong model id, no Hugging Face credits (HTTP 402), or the daily budget was reached. The notice and Data status show which |
-| Every API call returns 401 | `API_AUTH_TOKEN` is set in `.env`. Enter the same value under Data status → Access, or clear it |
-| Data status shows a cache warning about Redis | `REDIS_URL` is set but Redis is not running. Local runs fall back to the in-process cache; start Redis or clear `REDIS_URL` |
-| A sector is missing from the rotation graph | Its index has no history and fewer than three of its stocks are tracked. The page lists the reason |
-| Want to start completely fresh | `rm -rf backend/var` then `./scripts/dev.sh` |
+| `dev.sh`: "port 8000 … is held by Docker" | A Compose stack publishes 8000 (and 8080). `docker compose down`, or `API_PORT=8001 ./scripts/dev.sh`. A **paused** Docker Desktop keeps these ports reserved: resume it first, then `docker compose down` |
+| `dev.sh`: "PostgreSQL is not reachable … Docker is not available" | Start or resume Docker Desktop, or use Homebrew PostgreSQL (section 3, option B), or set `DATABASE_URL` to your server |
+| `docker compose up` fails with "Docker Desktop is manually paused" | Whale menu → Resume |
+| API exits with "has no tables: no migration has been applied" | `cd backend && uv run python -m app.devtools.preflight migrate` |
+| API exits with "schema is at migration X but this code expects Y" | Same command: the code is newer than the database |
+| `alembic upgrade head` fails with "relation … already exists" | Tables were created without a migration record (an old start with `AUTO_CREATE_SCHEMA=true`). Use `preflight migrate`, which records them and continues |
+| API exits with "Cannot reach the database" | PostgreSQL is down or `DATABASE_URL` is wrong; `uv run python -m app.devtools.preflight db` shows the exact error |
+| Settings look wrong in Docker | A note after a value (`KEY=value   # note`) is passed through by Compose. The app strips such notes, but keep comments on their own lines (as in `.env.example`) |
+| Data status shows a Redis cache warning | `REDIS_URL` is set but Redis is not running. Local runs fall back to the in-process cache; start Redis or clear `REDIS_URL` |
+| Every API call returns 401 | `API_AUTH_TOKEN` is set; enter it under Data status → Access, or clear it |
+| "No market data yet" for a long time | The first refresh is still running, or failed: Data status → Job history shows which |
+| A job shows "interrupted" | The process stopped while it ran. Run it again |
+| NSE sources "unavailable" (502/504/timeout) | The NSE servers are intermittently down. Stored data keeps being served; refresh later |
+| Broker "login required" | Data status → Check broker session → open the link → approve → check again |
+| Scores "Insufficient data" in live mode | No financial statements uploaded, or not enough history; the page lists which pillars lack data |
+| 12-month return or 1-year volatility missing | Fewer than 253 daily bars; use `HISTORY_YEARS=2` or more and refresh |
+| Research says the model was not used | `LLM_ENABLED` off, missing token or model id, no Hugging Face credits (402), or daily budget reached; the notice says which |
+| "Too many refresh requests" | Rate limit; wait the seconds shown |
+| Ports 9100–9102 busy | An old mock server is running: `lsof -ti :9100,:9101,:9102 \| xargs kill`, or `MOCK_MCP_PORT=9200` |
 
-Logs: `dev.sh` prints the API's JSON logs to the terminal. Each API error on screen shows a request
-id that you can search for in those logs.
-
-API reference while running: http://127.0.0.1:8000/docs
+Logs: `dev.sh` prints the API's JSON logs. Every error shown in the web app carries a request id
+that you can search for in them.
 
 ---
 
-## 12. Things to know before relying on it
+## 15. Configuration reference
 
-- It is a research tool. It cannot place orders and its output is not investment advice.
-- NSE states its MCP data is delayed and for informational and educational use, not commercial
-  deployment or AI model training. Check NSE, Kite and search-provider terms before any public use.
-- Verified against real services: NSE MCP (discovery, quotes, history, index history, corporate
-  actions, a full pipeline run), web search through `ddgs`, PostgreSQL and Redis.
-- Not verified: Kite quotes and history (needs your login), Kite Connect REST, real output from the
-  Hugging Face model (the account had no inference credits), and the Docker path.
-- Full status and limitations: `README.md` and `PLAN.md`. Formulas: `docs/methodology.md`.
+All settings live in `.env` (template: `.env.example`). Blank means "not set". Keep comments on
+their own lines.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `APP_ENV` | `local` | `local`, `staging`, `production`. Outside local, an unreachable Redis is an error instead of a fallback |
+| `DATA_MODE` | `demo` | `demo` (mock MCP, synthetic) or `live` (real MCP servers) |
+| `DATABASE_URL` | `postgresql+psycopg://markets:markets@localhost:5432/markets` | PostgreSQL through psycopg 3 |
+| `POSTGRES_PASSWORD` | `markets` | Password of the Compose database (must match `DATABASE_URL`) |
+| `AUTO_CREATE_SCHEMA` | `false` | Leave false: migrations create the schema |
+| `REDIS_URL` | blank | Blank = in-process cache; needed when API and worker run separately |
+| `SCHEDULER_ENABLED` | `true` | Set false on the API when a worker runs the schedule |
+| `AUTO_INITIAL_REFRESH` | `true` | Fill an empty database automatically at first start |
+| `API_AUTH_TOKEN` | blank | When set, every `/api/v1` call needs `Authorization: Bearer <token>` |
+| `CORS_ORIGINS` | local Vite URLs | Allowed browser origins |
+| `NSE_BHAVCOPY_MCP_URL`, `NSE_CM_MARKET_MCP_URL`, `BROKER_MCP_URL` | the real MCP URLs | Used in live mode |
+| `MCP_*`, `BREAKER_*`, `*_MIN_INTERVAL_SECONDS` | see `.env.example` | Timeouts, retries, concurrency, pacing, circuit breaker |
+| `LLM_ENABLED`, `HF_TOKEN`, `HF_MODEL_ID`, `HF_ENDPOINT_URL`, `LLM_*` | off | Hugging Face model and its budgets |
+| `WEB_SEARCH_PROVIDER`, `WEB_SEARCH_API_KEY` | `ddgs` | Web research provider |
+| `*_CRON` | see section 12 | Job schedules (India time) |
+| `BENCHMARK_SYMBOL` | `NIFTY 50` | Benchmark for relative strength and sector rotation |
+| `HISTORY_YEARS` | `3` | Years of daily history fetched on first ingest |
+| `CACHE_TTL_*`, `RATE_LIMIT_*`, `MAX_REQUEST_BYTES` | see `.env.example` | Cache lifetimes, API rate limits, upload size |
+| `API_PORT`, `MOCK_MCP_PORT` | 8000, 9100 | Environment variables for `scripts/dev.sh` |
+
+Before any public or commercial use: NSE states its MCP data is delayed and for informational and
+educational use, not commercial deployment or AI model training. Check NSE, Kite and
+search-provider terms.

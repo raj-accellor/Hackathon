@@ -30,11 +30,11 @@ jobs:
       - name: Requirements files match the lockfile
         run: ../scripts/export-requirements.sh && git diff --exit-code requirements.txt requirements-dev.txt
       - name: Migrations apply to PostgreSQL and match the models
-        env: { DATABASE_URL: "postgresql+asyncpg://markets:ci-only@localhost:5432/markets" }
+        env: { DATABASE_URL: "postgresql+psycopg://markets:ci-only@localhost:5432/markets" }
         run: uv run alembic upgrade head && uv run alembic check
       - name: Integration tests on PostgreSQL and Redis (migrated schema)
         env:
-          TEST_DATABASE_URL: "postgresql+asyncpg://markets:ci-only@localhost:5432/markets"
+          TEST_DATABASE_URL: "postgresql+psycopg://markets:ci-only@localhost:5432/markets"
           TEST_REDIS_URL: "redis://localhost:6379/0"
         run: uv run pytest -q tests/api tests/services
       - name: Dependency audit

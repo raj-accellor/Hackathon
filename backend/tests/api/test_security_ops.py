@@ -74,8 +74,8 @@ def test_log_redaction_removes_tokens_and_secret_fields():
 
 
 def test_settings_do_not_print_secrets():
-    s = Settings(_env_file=None, hf_token="hf_SECRETVALUE", kite_api_secret="KS", api_auth_token="AT", web_search_api_key="WK")
-    for secret in ("hf_SECRETVALUE", "'KS'", "'AT'", "'WK'"):
+    s = Settings(_env_file=None, hf_token="hf_SECRETVALUE", api_auth_token="AT", web_search_api_key="WK")
+    for secret in ("hf_SECRETVALUE", "'AT'", "'WK'"):
         assert secret not in repr(s)
 
 
@@ -211,7 +211,7 @@ async def test_unconfigured_live_mode_reports_every_source_and_shows_no_data(tmp
     from app.core.container import build_container
     from app.main import create_app
 
-    s = Settings(_env_file=None, app_env="test", data_mode="live", database_url=f"sqlite+aiosqlite:///{tmp_path}/live.db",
+    s = Settings(_env_file=None, app_env="test", data_mode="live", database_url=f"sqlite+aiosqlite:///{tmp_path}/live.db", auto_create_schema=True,
                  scheduler_enabled=False, fundamentals_dir=tmp_path / "f", universe_file=tmp_path / "missing.csv")
     c = build_container(s)
     app = create_app(s, c, run_startup_jobs=False)
@@ -239,7 +239,7 @@ def test_env_example_as_shipped_gives_safe_working_defaults():
 
     s = Settings(_env_file=Path(__file__).parents[3] / ".env.example")
     assert s.api_auth_token is None, "a blank API_AUTH_TOKEN must not switch authentication on"
-    assert s.redis_url is None and s.hf_token is None and s.hf_endpoint_url is None and s.kite_api_key is None
+    assert s.redis_url is None and s.hf_token is None and s.hf_endpoint_url is None
     assert s.web_search_api_key is None and s.hf_model_id is None
     assert s.data_mode == "demo" and s.llm_enabled is False and s.web_search_provider == "ddgs"
     assert s.rrg_refresh_cron == "0 */12 * * *" and s.theme_refresh_cron == "30 6 1 * *"

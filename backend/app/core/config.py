@@ -3,14 +3,16 @@ real default and nothing here is ever sent to the browser."""
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+_INLINE_COMMENT = re.compile(r"\s+#")
 
 
 class Settings(BaseSettings):
@@ -20,14 +22,16 @@ class Settings(BaseSettings):
     # demo: connectors point at the local mock MCP servers and every record is labelled demo.
     data_mode: Literal["demo", "live"] = "demo"
     log_level: str = "INFO"
-    database_url: str = f"sqlite+aiosqlite:///{BACKEND_DIR / 'var' / 'app.db'}"
+    # PostgreSQL through psycopg 3. Any postgres:// / postgresql:// / +asyncpg URL is rewritten to this driver.
+    database_url: str = "postgresql+psycopg://markets:markets@localhost:5432/markets"
     redis_url: str | None = None
     api_auth_token: SecretStr | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     default_market_timezone: str = "Asia/Kolkata"
     scheduler_enabled: bool = True
-    # Local and test runs create tables from the models. Deployments set this false and run Alembic.
-    auto_create_schema: bool = True
+    # The schema comes from Alembic (`alembic upgrade head`, run by scripts/dev.sh and the Compose
+    # `migrate` service). True creates tables straight from the models, which tests use on SQLite.
+    auto_create_schema: bool = False
     auto_initial_refresh: bool = True
 
     # --- MCP connectors
@@ -42,13 +46,6 @@ class Settings(BaseSettings):
     broker_mcp_min_interval_seconds: float = 0.35
     breaker_failure_threshold: int = 5
     breaker_reset_seconds: float = 60.0
-
-    # --- Kite Connect v3 REST (optional second broker path)
-    kite_api_key: str | None = None
-    kite_api_secret: SecretStr | None = None
-    kite_access_token: SecretStr | None = None
-    kite_api_base_url: str = "https://api.kite.trade"
-    kite_login_url: str = "https://kite.zerodha.com/connect/login"
 
     # --- Fundamentals (no MCP source supplies statements)
     fundamentals_dir: Path = BACKEND_DIR / "var" / "fundamentals"
@@ -101,13 +98,37 @@ class Settings(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
-    def _blank_means_unset(cls, data: Any) -> Any:
-        """`KEY=` in a .env file means "not set". Without this a blank API_AUTH_TOKEN would switch
-        authentication on with an empty token, and a blank URL would count as configured."""
-        if isinstance(data, dict):
-            optional = {n for n, f in cls.model_fields.items() if f.default is None}
-            return {k: (None if k in optional and isinstance(v, str) and not v.strip() else v) for k, v in data.items()}
-        return data
+    def _clean_env_values(cls, data: Any) -> Any:
+        """Make values from .env files and Docker Compose behave the same way.
+
+        - `KEY=value   # note`: Compose keeps the note as part of the value. A `#` preceded by
+          whitespace starts a comment and is removed; a `#` inside a value (a URL fragment) is kept.
+        - Leading and trailing spaces are removed.
+        - `KEY=` means "not set" for optional settings, so a blank API_AUTH_TOKEN does not switch
+          authentication on with an empty token and a blank URL does not count as configured.
+        """
+        if not isinstance(data, dict):
+            return data
+        optional = {n for n, f in cls.model_fields.items() if f.default is None}
+        out: dict[str, Any] = {}
+        for k, v in data.items():
+            if isinstance(v, str):
+                v = _INLINE_COMMENT.split(v, maxsplit=1)[0].strip()
+                if not v and k in optional:
+                    v = None
+            out[k] = v
+        return out
+
+    @field_validator("database_url")
+    @classmethod
+    def _psycopg_driver(cls, v: str) -> str:
+        """Use psycopg 3 for PostgreSQL whatever form the URL was written in."""
+        m = re.match(r"^(postgres|postgresql)(\+[a-z0-9_]+)?://", v)
+        if not m:
+            return v
+        v = "postgresql+psycopg://" + v[m.end():]
+        # asyncpg spells TLS as ?ssl=…; libpq/psycopg uses ?sslmode=…
+        return re.sub(r"([?&])ssl=", r"\1sslmode=", v)
 
     @property
     def is_demo(self) -> bool:

@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import market, user
@@ -33,14 +34,72 @@ SECURITY_HEADERS = {"X-Content-Type-Options": "nosniff", "X-Frame-Options": "DEN
                     "Cache-Control": "no-store"}
 
 
+class SchemaNotReady(RuntimeError):
+    """The database schema is missing or older than this code expects."""
+
+
+def _expected_revision() -> str | None:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    from app.core.config import BACKEND_DIR
+
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
 async def init_database(c: Container) -> None:
-    """Local/test runs create the schema from the models. Deployments run `alembic upgrade head`
-    before starting (see README); AUTO_CREATE_SCHEMA is off there."""
+    """Make sure the schema is usable before serving.
+
+    With AUTO_CREATE_SCHEMA=false (the default) the schema must come from Alembic. Instead of failing
+    later on a missing table, start-up stops with the exact command to run."""
     if c.settings.auto_create_schema:
         await create_all(c.engine)
+        await _record_revision(c, _expected_revision())
+        return
+    expected = _expected_revision()
+    fix = "Run `cd backend && uv run alembic upgrade head` (scripts/dev.sh does this for you), then start again."
+    try:
+        async with c.engine.connect() as conn:
+            current = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar()
+    except Exception as e:
+        if "alembic_version" not in str(e) and "does not exist" not in str(e) and "no such table" not in str(e):
+            raise SchemaNotReady(f"Cannot reach the database at {_safe_db(c)}: {type(e).__name__}: {str(e)[:200]}. "
+                                 "Check DATABASE_URL and that PostgreSQL is running (`docker compose up -d postgres`).") from e
+        raise SchemaNotReady(f"The database at {_safe_db(c)} has no tables: no migration has been applied. {fix}") from e
+    if current != expected:
+        raise SchemaNotReady(f"The database schema is at migration {current} but this code expects {expected}. {fix}")
+
+
+async def _record_revision(c: Container, revision: str | None) -> None:
+    """Tables created straight from the models match the latest migration, so record it. Otherwise a
+    later `alembic upgrade head` tries to create them again and fails with "already exists"."""
+    if revision is None:
+        return
+    async with c.engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL, "
+                                "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"))
+        if (await conn.execute(text("SELECT count(*) FROM alembic_version"))).scalar() == 0:
+            await conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:v)"), {"v": revision})
+
+
+def _safe_db(c: Container) -> str:
+    return c.engine.url.render_as_string(hide_password=True)
 
 
 async def seed(c: Container) -> None:
+    """The seed is idempotent, but the API and worker start together against a fresh database and can
+    both insert the built-in themes at once. The loser gets a unique violation; running again sees
+    the winner's rows."""
+    try:
+        await _seed(c)
+    except IntegrityError:
+        log.info("seed_retry_after_concurrent_insert")
+        await _seed(c)
+
+
+async def _seed(c: Container) -> None:
     async with c.sessions() as s:
         await pipeline.instruments_job(c, s)
         if c.settings.is_demo:
@@ -64,6 +123,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         app.state.container = c
         await init_database(c)
         await c.start()
+        await jobs.mark_interrupted(c)
         await seed(c)
         if settings.scheduler_enabled:
             c.scheduler = Scheduler(c)

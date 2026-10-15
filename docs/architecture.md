@@ -20,7 +20,7 @@ A modular monolith plus a scheduler. One codebase, two process roles (`api`, `wo
         │           └─ KiteMcpProvider (allowlisted read tools) [fallback] │
         │ KiteConnectProvider · FileFundamentalsProvider · search · LLM    │
         └──────────────┬──────────────────────────────┬────────────────────┘
-                 PostgreSQL / SQLite              Redis / in-memory
+                 PostgreSQL (psycopg 3)           Redis / in-memory
                                         ▲
                     worker (APScheduler): prices daily, RRG every 12 h,
                     themes monthly, instruments daily, alerts every 15 min

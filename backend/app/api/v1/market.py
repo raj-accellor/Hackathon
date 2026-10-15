@@ -64,16 +64,13 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
         {"key": "nse_bhavcopy", "label": "NSE bhavcopy MCP", "role": "primary: end-of-day history, corporate actions", **nse_h["nse_bhavcopy"]},
         {"key": "nse_cm_market", "label": "NSE CM market MCP", "role": "primary: delayed live quotes", **nse_h["nse_cm_market"]},
         {"key": "kite_mcp", "label": "Zerodha Kite MCP", "role": "fallback: fills gaps, cross-checks NSE values", **kite_h},
-        {"key": "kite_connect", "label": "Kite Connect v3 REST", "role": "optional fallback",
-         **(c.kite_rest.health() if c.kite_rest else {"name": "kite_connect", "state": "not_configured", "url": None})},
         {"key": "fundamentals", "label": "Fundamentals files", "role": "financial statements (no MCP source provides them)", **c.fundamentals.status()},
         {"key": "web_search", "label": "Web search", "role": "news and filings for research", **c.search.status()},
         {"key": "llm", "label": "LLM (Hugging Face)", "role": "research synthesis and concall classification", **c.llm.status()},
     ]
     return {
         **meta(c), "connectors": connectors,
-        "capabilities": {"nse_mcp": c.nse.capabilities(), "kite_mcp": c.kite.capabilities(),
-                         "kite_connect": c.kite_rest.capabilities() if c.kite_rest else None},
+        "capabilities": {"nse_mcp": c.nse.capabilities(), "kite_mcp": c.kite.capabilities()},
         "precedence": {"default": reconcile.DEFAULT_PRECEDENCE, "policy": (reconcile.__doc__ or "").strip(),
                        "tolerances_pct": {f: reconcile.tolerance_pct(f) for f in ("close", "last_price", "volume")}},
         "coverage": {"instruments": n_inst, "bars_by_provider": counts, "last_bar": last_bar.isoformat() if last_bar else None,
@@ -92,21 +89,7 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
 async def broker_login(c: Ctx, actor: Actor) -> dict[str, Any]:
     """Current broker session state. When login is required the response carries the Kite
     authorisation link for the account holder to open."""
-    return {**meta(c), "kite_mcp": await c.kite.auth_state(),
-            "kite_connect": await c.kite_rest.auth_state() if c.kite_rest else {"state": "not_configured"}}
-
-
-@router.post("/sources/kite-connect/session", dependencies=[rate_limit("refresh")])
-async def kite_connect_session(c: Ctx, s: Db, actor: Actor, request_token: Annotated[str, Body(embed=True, min_length=6, max_length=64)]) -> dict[str, Any]:
-    if c.kite_rest is None:
-        raise ApiError(409, "not_configured", "Kite Connect is not configured (KITE_API_KEY / KITE_API_SECRET).")
-    try:
-        who = await c.kite_rest.exchange_token(request_token)
-    except ProviderUnavailable as e:
-        raise ApiError(502, "broker_error", str(e)) from e
-    await audit(s, actor, "broker.session", "kite_connect", None, {"user_id": who.get("user_id")})
-    await s.commit()
-    return {**meta(c), "state": "authorized", **who}
+    return {**meta(c), "kite_mcp": await c.kite.auth_state()}
 
 
 @router.post("/sources/rediscover", dependencies=[rate_limit("refresh")])

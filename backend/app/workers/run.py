@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.container import build_container
 from app.main import init_database, seed
 from app.observability.logging import configure
+from app.services import jobs
 from app.workers.scheduler import Scheduler
 
 
@@ -20,6 +21,7 @@ async def main() -> None:
     c = build_container(settings)
     await init_database(c)
     await c.start()
+    await jobs.mark_interrupted(c)
     await seed(c)
     sched = Scheduler(c)
     sched.start()

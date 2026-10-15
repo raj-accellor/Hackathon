@@ -8,7 +8,6 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.connectors.fundamentals_file import FileFundamentalsProvider
-from app.connectors.kite_connect import KiteConnectProvider
 from app.connectors.kite_mcp import ALLOWED_TOOLS, KiteMcpProvider
 from app.connectors.llm import HuggingFaceLLM
 from app.connectors.mcp_client import McpClient
@@ -30,7 +29,6 @@ class Container:
     clock: Clock
     nse: NseMcpProvider
     kite: KiteMcpProvider
-    kite_rest: KiteConnectProvider | None
     fundamentals: FileFundamentalsProvider
     search: Any
     llm: HuggingFaceLLM
@@ -67,8 +65,6 @@ class Container:
     async def close(self) -> None:
         await self.nse.close()
         await self.kite.close()
-        if self.kite_rest is not None:
-            await self.kite_rest.close()
         await self.llm.close()
         await self.cache.close()
         await self.engine.dispose()
@@ -106,10 +102,6 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
     kite = KiteMcpProvider(
         client("kite_mcp", urls["broker"], demo_interval if demo_interval is not None else s.broker_mcp_min_interval_seconds, ALLOWED_TOOLS),
         is_demo=s.is_demo)
-    kite_rest = None
-    if s.kite_api_key and not s.is_demo:
-        kite_rest = KiteConnectProvider(s.kite_api_key, _secret(s.kite_api_secret), _secret(s.kite_access_token),
-                                        base_url=s.kite_api_base_url, login_base=s.kite_login_url, clock=clock)
     cache = build_cache(s.redis_url)
     engine = make_engine(s.database_url)
     fundamentals_dir = s.fundamentals_dir / ("demo" if s.is_demo else "live")
@@ -120,7 +112,7 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
     }
     return Container(
         settings=s, engine=engine, sessions=make_sessionmaker(engine), cache=cache, clock=clock, nse=nse, kite=kite,
-        kite_rest=kite_rest, fundamentals=FileFundamentalsProvider(fundamentals_dir, allow_demo=s.is_demo),
+        fundamentals=FileFundamentalsProvider(fundamentals_dir, allow_demo=s.is_demo),
         search=build_search(s.web_search_provider, _secret(s.web_search_api_key), s.web_search_timeout_seconds,
                             disabled_reason="Web research is off in demo mode: demo symbols are fictional, so a real search "
                                             "would return unrelated results." if s.is_demo else None),
@@ -128,5 +120,5 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
                            router_url=s.hf_router_url, timeout=s.llm_timeout_seconds, max_retries=s.llm_max_retries,
                            max_output_tokens=s.llm_max_output_tokens, temperature=s.llm_temperature,
                            daily_budget=s.llm_daily_budget, daily_token_budget=s.llm_daily_token_budget),
-        market_data=CorrelatedMarketData(nse, kite, kite_rest, cache, s.cache_ttl_quote), limiters=limiters,
+        market_data=CorrelatedMarketData(nse, kite, cache, s.cache_ttl_quote), limiters=limiters,
     )

@@ -18,6 +18,7 @@ class Cache(Protocol):
     async def set(self, key: str, value: Any, ttl: int) -> None: ...
     async def delete_prefix(self, prefix: str) -> None: ...
     def lock(self, key: str, ttl: int = 600) -> Any: ...
+    async def is_locked(self, key: str) -> bool: ...
     async def close(self) -> None: ...
 
 
@@ -58,6 +59,9 @@ class MemoryCache:
         finally:
             self._locks.discard(key)
 
+    async def is_locked(self, key: str) -> bool:
+        return key in self._locks
+
     async def close(self) -> None:
         self._data.clear()
 
@@ -92,6 +96,9 @@ class RedisCache:
             yield
         finally:
             await self._r.delete(f"lock:{key}")
+
+    async def is_locked(self, key: str) -> bool:
+        return bool(await self._r.exists(f"lock:{key}"))
 
     async def close(self) -> None:
         await self._r.aclose()

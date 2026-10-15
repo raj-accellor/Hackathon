@@ -169,7 +169,7 @@ class KiteMcpProvider:
         rows = ps.find_rows(payload)
         if rows and not isinstance(rows[0], dict):
             rows = []
-        if not rows and isinstance(payload, dict):  # Kite Connect style: {"candles": [[ts, o, h, l, c, v], ...]}
+        if not rows and isinstance(payload, dict):  # candle-array style: {"candles": [[ts, o, h, l, c, v], ...]}
             candles = payload.get("candles") or (payload.get("data") or {}).get("candles") or []
             rows = [dict(zip(("date", "open", "high", "low", "close", "volume"), c, strict=False)) for c in candles]
         df = ps.bars_frame(rows)
