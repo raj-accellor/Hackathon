@@ -332,14 +332,14 @@ no secrets in the bundle.
 | Suite | Count | What it covers |
 |---|---|---|
 | Domain unit tests | 126 | Every ratio and indicator with hand-calculated fixtures and edge cases; scoring weights and normalisation; theme DSL and all built-in themes; RRG; reconciliation; entry setup; concall scoring |
-| Connector contract tests | 60 | MCP client behaviour (retries, SSE, sessions, breaker, allowlist); bindings and parsing against the **recorded real tool schemas and payloads** of NSE and Kite (`tests/fixtures/live/`); web search; LLM (mocked) |
-| Service and API integration | 82 | Full pipeline over real MCP transport to mock servers; correlation cases (split, gap, conflict, outages); every API area; security (auth, rate limits, injection, size limits, redaction); scheduling with a controllable clock; snapshot immutability |
+| Connector contract tests | 61 | MCP client behaviour (retries, SSE, sessions, breaker, allowlist); bindings and parsing against the **recorded real tool schemas and payloads** of NSE and Kite (`tests/fixtures/live/`); web search; LLM (mocked) |
+| Service and API integration | 83 | Full pipeline over real MCP transport to mock servers; correlation cases (split, gap, conflict, outages); every API area; security (auth, rate limits, injection, size limits, redaction); scheduling with a controllable clock; snapshot immutability |
 | Config and start-up | 16 | psycopg URL handling, `.env` cleaning, schema checks, unrecorded-schema adoption, interrupted jobs |
 | Frontend component tests | 14 | Formatting, missing states, score displays, entry setup, filters, rotation chart, response contracts |
 | Browser end-to-end | 13 | Main user flows on desktop and mobile |
 
 The backend suite runs on SQLite by default and on PostgreSQL + Redis with `TEST_DATABASE_URL` and
-`TEST_REDIS_URL`; both pass (281 tests, plus 3 Redis-only tests that skip without Redis). The CI
+`TEST_REDIS_URL`; both pass (283 tests, plus 3 Redis-only tests that skip without Redis). The CI
 workflow runs lint, types, tests, the PostgreSQL migration check, the PostgreSQL + Redis
 integration tests, dependency audits and the browser tests.
 
@@ -377,5 +377,5 @@ integration tests, dependency audits and the browser tests.
 - Kite MCP approval is bound to the API process's MCP session and must be repeated after restarts
   and daily.
 - No OpenTelemetry tracing yet.
-- Docker Compose containers, the CI workflow on a runner, real Kite quotes/history and real model
-  output have not been verified (see `REPOSITORY_GUIDE.md` §5).
+- The CI workflow on a runner, real Kite quotes/history and real model output have not been
+  verified (see `REPOSITORY_GUIDE.md` §5). The Docker Compose stack has been verified.

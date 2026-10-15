@@ -129,3 +129,20 @@ async def test_failed_quote_is_not_cached(mock_mcp, mock_state):
     assert q["status"] == "unavailable" and q["fields"] == {}
     assert {s["status"] for s in q["sources"]} == {"unavailable"}
     assert (await md.quote("DEMOIT01"))["cache"] == "miss"
+
+
+async def test_index_history_with_nse_unreachable_is_unavailable_not_unsupported(mock_mcp, mock_state):
+    """NSE down must read as 'unavailable' (try again later), not 'not supported' (never possible)."""
+    from app.connectors.nse_mcp import NseMcpProvider
+
+    dead = httpx.MockTransport(lambda r: httpx.Response(504))
+    nse = NseMcpProvider(McpClient("nse_bhavcopy", "http://x.test/mcp", transport=dead, min_interval=0, max_retries=0),
+                         McpClient("nse_cm_market", "http://y.test/mcp", transport=dead, min_interval=0, max_retries=0))
+    await nse.start()
+    mock_state.kite_logged_in = True
+    kite = KiteMcpProvider(McpClient("kite_mcp", mock_mcp["kite"], allowed_tools=ALLOWED_TOOLS, min_interval=0), is_demo=True)
+    await kite.start()
+    b = await CorrelatedMarketData(nse, kite, MemoryCache()).history(dd.BENCHMARK, *rng(dd.BENCHMARK), instrument_type="INDEX")
+    st = by(b.sources, "nse_mcp")
+    assert st.status == "unavailable" and "504" in st.reason
+    assert set(b.frame["provider"]) == {"kite_mcp"}

@@ -38,6 +38,10 @@ def _db() -> int:
     except psycopg.OperationalError as e:
         first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
         print(f"database: cannot connect to {u.render_as_string(hide_password=True)} ({first})")
+        if "password authentication failed" in str(e):
+            print("          The database exists but the password differs. PostgreSQL applies POSTGRES_PASSWORD only when its\n"
+                  "          volume is first created: use the original password in DATABASE_URL and POSTGRES_PASSWORD (default\n"
+                  "          change-me-locally), or run ALTER USER inside the container. See analysis/HOW_TO_RUN.md, section 14.")
         return 1
     with conn:
         row = conn.execute("show server_version").fetchone()

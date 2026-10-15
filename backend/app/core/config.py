@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     data_mode: Literal["demo", "live"] = "demo"
     log_level: str = "INFO"
     # PostgreSQL through psycopg 3. Any postgres:// / postgresql:// / +asyncpg URL is rewritten to this driver.
-    database_url: str = "postgresql+psycopg://markets:markets@localhost:5432/markets"
+    database_url: str = "postgresql+psycopg://markets:change-me-locally@localhost:5432/markets"
     redis_url: str | None = None
     api_auth_token: SecretStr | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

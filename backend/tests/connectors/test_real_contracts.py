@@ -223,3 +223,22 @@ async def test_login_stays_required_while_a_login_link_is_pending_even_if_errors
         assert e.value.state == "login_required"
     st = await k.auth_state()
     assert st["state"] == "login_required" and st["login_url"].endswith("session_id=abc")
+
+
+async def test_generic_profile_failure_before_login_still_offers_the_login_link():
+    """Observed live on 2026-10-15: before login, get_profile fails with a generic
+    'Failed to execute get_profile' (no mention of login). That is still a login problem."""
+    def r(name, a):
+        if name == "login":
+            return "Please login: https://mcp.kite.trade/authorize?session_id=xyz"
+        if name == "search_instruments":
+            return {"data": [{"id": "NSE:INFY", "instrument_token": 408065, "tradingsymbol": "INFY", "exchange": "NSE"}]}
+        return ("error", f"Failed to execute {name}")
+
+    k = KiteMcpProvider(server("kite_mcp", r, []))
+    await k.start()
+    st = await k.auth_state()
+    assert st["state"] == "login_required" and st["login_url"].endswith("session_id=xyz")
+    with pytest.raises(ProviderUnavailable) as e:
+        await k.get_history("INFY", date(2026, 10, 1), date(2026, 10, 9))
+    assert e.value.state == "login_required"

@@ -82,7 +82,9 @@ class CorrelatedMarketData:
         cap = "index_history" if instrument_type == "INDEX" else "history"
         if self.nse is not None:
             c = self.nse.capabilities().get(cap, {})
-            if instrument_type == "INDEX" and not c.get("supported"):
+            # Skip NSE for an index only when its servers are up and advertise no index-history tool.
+            # When they are unreachable, try anyway so the outcome reads "unavailable", not "not supported".
+            if instrument_type == "INDEX" and not c.get("supported") and "no tool advertised" in (c.get("reason") or ""):
                 sources.append(SourceStatus("nse_mcp", "history", "not_supported", c.get("reason") or "index history is not provided"))
             else:
                 providers.append(self.nse)

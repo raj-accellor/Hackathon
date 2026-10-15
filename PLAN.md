@@ -36,11 +36,19 @@ start-up errors; documentation under `analysis/`.
   - jobs left "running" by a stopped process are marked interrupted at start-up.
 - `scripts/dev.sh` now starts PostgreSQL/Redis with Docker Compose when local and down, applies
   migrations, then starts the app.
-- Results: backend 281 passed + 3 Redis-only (284 on PostgreSQL 16 + Redis 6.2 through psycopg); lint
+- Results: backend 283 passed + 3 Redis-only (284 verified earlier on PostgreSQL 16 + Redis 6.2 through psycopg); lint
   and types clean; frontend 14 passed, builds; browser tests 13 passed against a PostgreSQL-backed
   stack; live mode on PostgreSQL started with real NSE MCP (21 + 15 tools) and returned a real INFY quote.
-- Not verified: Docker Compose containers (Docker Desktop was paused and cannot be resumed from the
-  command line); Kite quotes/history (needs the account holder's login); real model output (HTTP 402).
+- Docker Compose verified (Docker Desktop started): images build, `migrate` exits 0, all services healthy,
+  live mode reachable through nginx :8080; `scripts/dev.sh` verified against the Compose PostgreSQL/Redis
+  with the user's `.env` (real TCS quote from NSE MCP).
+- Found and fixed during that run: the Compose default database password had been changed to
+  `markets`, but an existing volume keeps its original password (`change-me-locally`), so `migrate`
+  failed with "password authentication failed" — `change-me-locally` restored as the single default
+  and a pre-flight hint added; Kite's generic pre-login errors now read "login required" with a link;
+  NSE index history while NSE is unreachable now reads "unavailable", not "not supported".
+- Not verified: Kite quotes/history (needs the account holder's login); real model output (HTTP 402);
+  CI on a GitHub runner.
 - Documentation: `analysis/HOW_TO_RUN.md` (rewritten), `analysis/REPOSITORY_GUIDE.md` (new),
   `analysis/ARCHITECTURE.md` (new), `analysis/RUN_AND_DEPLOY.md` (cloud deployment, updated).
 

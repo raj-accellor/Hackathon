@@ -244,7 +244,8 @@ Hackathon/
 | Research board and web search (`ddgs`) | Built; verified with real searches and real NSE quotes |
 | Concall analyzer | Built; heuristic path verified on demo transcripts; model path covered by mocked tests |
 | Watchlists, alerts, jobs, audit, observability | Built and tested |
-| Docker Compose, CI workflow | Written; Compose checked statically; every CI step passes locally |
+| Docker Compose | Verified: images build, migration runs, all services healthy, app reachable through nginx in live mode |
+| CI workflow | Written; every CI step passes locally |
 
 Recent changes (2026-10-15):
 
@@ -262,8 +263,9 @@ Recent changes (2026-10-15):
 |---|---|
 | NSE MCP against the real servers | Kite quotes and history against the real server (needs the account holder's login) |
 | Kite MCP discovery, allowlist, instrument lookup | Real output from the Hugging Face model (the account had no inference credits; HTTP 402) |
-| Web search through `ddgs` | Docker Compose containers end to end (Docker Desktop was paused) |
+| Web search through `ddgs` | — |
 | PostgreSQL 16 + Redis: migration, ~280 tests, start-up script, live mode | CI on a GitHub runner (no remote configured) |
+| Docker Compose stack end to end, and `scripts/dev.sh` against it | — |
 | Browser tests (13) against a PostgreSQL-backed stack | Cloud deployments in `RUN_AND_DEPLOY.md` |
 
 ## 6. Not built

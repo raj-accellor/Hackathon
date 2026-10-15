@@ -72,8 +72,8 @@ lockfile for plain `pip`. Nothing needs installing by hand: the start script run
 The default connection, in `.env`:
 
 ```bash
-DATABASE_URL=postgresql+psycopg://markets:markets@localhost:5432/markets
-POSTGRES_PASSWORD=markets
+DATABASE_URL=postgresql+psycopg://markets:change-me-locally@localhost:5432/markets
+POSTGRES_PASSWORD=change-me-locally
 AUTO_CREATE_SCHEMA=false
 ```
 
@@ -104,7 +104,7 @@ docker compose down -v                       # stop and DELETE the database volu
 ```bash
 brew install postgresql@16
 brew services start postgresql@16
-psql -d postgres -c "CREATE ROLE markets LOGIN PASSWORD 'markets';"
+psql -d postgres -c "CREATE ROLE markets LOGIN PASSWORD 'change-me-locally';"
 createdb -O markets markets
 ```
 
@@ -347,9 +347,11 @@ docker compose down                              # stop all, keep data
 The Compose stack publishes ports 8000 and 8080. Stop it (`docker compose down`) before using
 `./scripts/dev.sh`, which needs port 8000; or run dev.sh with `API_PORT=8001`.
 
-> **Verification status:** the Compose file has been checked statically and the application has
-> been verified on PostgreSQL 16 and Redis outside Docker, but the containers have not been built
-> and run on this machine (Docker Desktop was paused during the work).
+> **Verified on 2026-10-15** on this machine (Docker Desktop 29.8, Apple Silicon): all images build;
+> `migrate` applies the schema and exits 0; `postgres`, `redis`, `api`, `worker` and `web` become
+> healthy; the web app and API answer through nginx on port 8080 in live mode, with psycopg, Redis and
+> the worker running the schedule. `./scripts/dev.sh` was also verified against the Compose
+> PostgreSQL and Redis with the same `.env`.
 
 ---
 
@@ -357,7 +359,7 @@ The Compose stack publishes ports 8000 and 8080. Stop it (`docker compose down`)
 
 ```bash
 docker compose exec postgres psql -U markets -d markets        # database in Docker
-psql postgresql://markets:markets@localhost:5432/markets        # from the Mac (Homebrew psql)
+psql postgresql://markets:change-me-locally@localhost:5432/markets        # from the Mac (Homebrew psql)
 ```
 
 GUI tools (DBeaver, TablePlus, pgAdmin, Postico): host `127.0.0.1`, port `5432`, user `markets`,
@@ -491,7 +493,7 @@ Run the integration tests on **PostgreSQL and Redis** (empty, migrated database)
 
 ```bash
 cd backend
-export TEST_DATABASE_URL=postgresql+psycopg://markets:markets@localhost:5432/markets_test
+export TEST_DATABASE_URL=postgresql+psycopg://markets:change-me-locally@localhost:5432/markets_test
 createdb -h localhost -U markets markets_test        # or: docker compose exec postgres createdb -U markets markets_test
 DATABASE_URL=$TEST_DATABASE_URL uv run python -m app.devtools.preflight migrate
 TEST_REDIS_URL=redis://localhost:6379/15 uv run pytest
@@ -512,6 +514,7 @@ Security audits: `uvx pip-audit --disable-pip --no-deps -r requirements.txt` (ba
 | API exits with "has no tables: no migration has been applied" | `cd backend && uv run python -m app.devtools.preflight migrate` |
 | API exits with "schema is at migration X but this code expects Y" | Same command: the code is newer than the database |
 | `alembic upgrade head` fails with "relation … already exists" | Tables were created without a migration record (an old start with `AUTO_CREATE_SCHEMA=true`). Use `preflight migrate`, which records them and continues |
+| "password authentication failed for user markets" (in `dev.sh`, the API or the Compose `migrate` service) | The database volume was created with a different password: PostgreSQL applies `POSTGRES_PASSWORD` only when it first creates the volume. Either put the original password in `.env` (`POSTGRES_PASSWORD` and `DATABASE_URL`; the default has always been `change-me-locally`), or change it inside the container: `docker compose exec postgres psql -U markets -d markets -c "ALTER USER markets PASSWORD 'new-password';"`. `docker compose down -v` also works but **deletes the database** |
 | API exits with "Cannot reach the database" | PostgreSQL is down or `DATABASE_URL` is wrong; `uv run python -m app.devtools.preflight db` shows the exact error |
 | Settings look wrong in Docker | A note after a value (`KEY=value   # note`) is passed through by Compose. The app strips such notes, but keep comments on their own lines (as in `.env.example`) |
 | Data status shows a Redis cache warning | `REDIS_URL` is set but Redis is not running. Local runs fall back to the in-process cache; start Redis or clear `REDIS_URL` |
@@ -540,8 +543,8 @@ their own lines.
 |---|---|---|
 | `APP_ENV` | `local` | `local`, `staging`, `production`. Outside local, an unreachable Redis is an error instead of a fallback |
 | `DATA_MODE` | `demo` | `demo` (mock MCP, synthetic) or `live` (real MCP servers) |
-| `DATABASE_URL` | `postgresql+psycopg://markets:markets@localhost:5432/markets` | PostgreSQL through psycopg 3 |
-| `POSTGRES_PASSWORD` | `markets` | Password of the Compose database (must match `DATABASE_URL`) |
+| `DATABASE_URL` | `postgresql+psycopg://markets:change-me-locally@localhost:5432/markets` | PostgreSQL through psycopg 3 |
+| `POSTGRES_PASSWORD` | `change-me-locally` | Password of the Compose database (must match `DATABASE_URL`) |
 | `AUTO_CREATE_SCHEMA` | `false` | Leave false: migrations create the schema |
 | `REDIS_URL` | blank | Blank = in-process cache; needed when API and worker run separately |
 | `SCHEDULER_ENABLED` | `true` | Set false on the API when a worker runs the schedule |

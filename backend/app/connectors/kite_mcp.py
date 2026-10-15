@@ -114,29 +114,30 @@ class KiteMcpProvider:
             self._auth = {"state": "not_configured"}
             return self._auth
         now = datetime.now(UTC).isoformat()
+        note = "Open the link, approve access in Kite, then re-check. Access is read-only market data."
         try:
-            profile = await self._call("get_profile", {})
-            who = profile.get("user_id") if isinstance(profile, dict) else None
-            self._auth = {"state": "authorized", "user_id": who, "checked_at": now}
-            self._pending_login_url = None
-        except ProviderUnavailable as e:
-            note = "Open the link, approve access in Kite, then re-check. Access is read-only market data."
-            if self._pending_login_url and e.state in ("login_required", "unavailable") and self.client.connected:
-                # Until the link is approved the server answers with generic failures.
-                self._auth = {"state": "login_required", "login_url": self._pending_login_url, "checked_at": now, "note": note}
-                return self._auth
-            if e.state != "login_required":
-                self._auth = {"state": e.state, "reason": str(e), "checked_at": now}
-                return self._auth
-            url = None
-            try:
-                text = await self._call("login", {})
-                m = _URL.search(text if isinstance(text, str) else str(text))
-                url = m.group(0) if m else None
-            except ProviderUnavailable:
-                pass
-            self._pending_login_url = url
-            self._auth = {"state": "login_required", "login_url": url, "checked_at": now, "note": note}
+            if not self.client.connected:
+                await self.client.connect(refresh=True)
+            profile = await self.client.call("get_profile", {})
+        except McpToolError:
+            # The server answered but would not return the profile: the session is not authorised.
+            # Kite's wording varies ("Please log in first", "Failed to execute get_profile"), so any
+            # tool error here means "log in", while transport failures below mean "unavailable".
+            if not self._pending_login_url:
+                try:
+                    text = await self.client.call("login", {})
+                    m = _URL.search(text if isinstance(text, str) else str(text))
+                    self._pending_login_url = m.group(0) if m else None
+                except McpError:
+                    pass
+            self._auth = {"state": "login_required", "login_url": self._pending_login_url, "checked_at": now, "note": note}
+            return self._auth
+        except McpError as e:
+            self._auth = {"state": "unavailable", "reason": str(e)[:300], "checked_at": now}
+            return self._auth
+        who = profile.get("user_id") if isinstance(profile, dict) else None
+        self._auth = {"state": "authorized", "user_id": who, "checked_at": now}
+        self._pending_login_url = None
         return self._auth
 
     # ------------------------------------------------------------------ data
