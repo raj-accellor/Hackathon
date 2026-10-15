@@ -98,22 +98,13 @@ A small, recommended first topology:
 - **Live mode.** Demo mode needs the mock MCP servers on three ports, which is not set up for
   the cloud.
 
-### 6.2 One required code change before any cloud deployment
+### 6.2 The web container's API address (done)
 
-`infra/docker/nginx.conf` forwards to the hard-coded host `api:8000`, which only exists inside
-Docker Compose. Make it configurable using the nginx image's built-in template support:
-
-1. Move `infra/docker/nginx.conf` to `infra/docker/nginx.conf.template` and replace both
-   `http://api:8000` with `http://${API_UPSTREAM}`.
-2. In `infra/docker/frontend.Dockerfile`, replace the `COPY infra/docker/nginx.conf …` line with:
-   ```dockerfile
-   COPY infra/docker/nginx.conf.template /etc/nginx/templates/default.conf.template
-   ENV API_UPSTREAM=api:8000
-   ```
-   At start, nginx substitutes `${API_UPSTREAM}` (only variables that are set in the environment
-   are replaced, so `$host` etc. are untouched).
-3. Docker Compose keeps working unchanged (default `api:8000`). In the cloud set
-   `API_UPSTREAM=127.0.0.1:8000`.
+nginx in the web image forwards `/api` and `/health` to `${API_UPSTREAM}`
+(`infra/docker/nginx.conf.template`). The image defaults it to `api:8000`, which is what Docker
+Compose needs. In the cloud, where web and api run side by side in one unit, set
+`API_UPSTREAM=127.0.0.1:8000` on the web container. Verified on 2026-10-15: the Compose stack works
+with the default, and the override renders a valid nginx configuration.
 
 ### 6.3 Settings every cloud needs
 
