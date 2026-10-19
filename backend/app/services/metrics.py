@@ -53,7 +53,16 @@ def fundamentals_for(periods: list[dict[str, Any]], sector_kind: str, price: flo
     dps = cur.get("dividend_per_share")
     if dps is None and cur.get("dividends_paid") is not None and shares:
         dps = abs(cur["dividends_paid"]) / shares
-    basis = f"FY ending {cur['period_end']} (latest annual; quarterly/TTM data not ingested)"
+    basis = f"FY ending {cur['period_end']} (latest annual)"
+    quarters = [(q["period_end"], q.get("eps")) for q in periods if q.get("period_type") == "quarterly"]
+    ttm_eps = fm.ttm("eps_ttm", quarters) if quarters else None
+    if ttm_eps is not None and ttm_eps.status == Status.OK and str(sorted(quarters)[-1][0]) > str(cur["period_end"]):
+        # Trailing twelve months is more recent than the last annual report: use it for earnings-based ratios.
+        eps = ttm_eps.value
+        latest_q = sorted(quarters)[-1][0]
+        basis = f"TTM to {latest_q} (sum of the latest four quarterly EPS as filed)"
+        shares = next((q.get("shares_outstanding") for q in sorted(periods, key=lambda q: str(q["period_end"]), reverse=True)
+                       if q.get("period_type") == "quarterly" and q.get("shares_outstanding")), shares)
     out.update(valuation.compute_valuation(
         price=price, shares_outstanding=shares, eps_ttm=eps, book_value_per_share=out["book_value_per_share"].value,
         revenue=cur.get("revenue"), ebitda=cur.get("ebitda"), ebit=cur.get("ebit"), fcf=out["fcf"].value if "fcf" in out else None,
@@ -79,10 +88,18 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
 
     periods: dict[int, list[dict[str, Any]]] = {}
     meta_by: dict[int, dict[str, Any]] = {}
+    # One statements source per instrument, so periods from different sources are never mixed:
+    # NSE filings first (primary source), then uploaded files.
+    by_source: dict[int, dict[str, list[FinancialPeriod]]] = {}
     for p in (await s.scalars(select(FinancialPeriod))).all():
-        periods.setdefault(p.instrument_id, []).append({**p.facts, "period_end": p.period_end.isoformat(), "period_type": p.period_type})
-        meta_by[p.instrument_id] = {"source": p.source, "currency": p.currency, "unit": p.unit, "ingested_at": p.ingested_at.isoformat(),
-                                    "is_demo": p.is_demo}
+        by_source.setdefault(p.instrument_id, {}).setdefault(p.source, []).append(p)
+    for iid, groups in by_source.items():
+        src = sorted(groups, key=lambda k: (not k.startswith("NSE filings"), k))[0]
+        rows = groups[src]
+        periods[iid] = [{**p.facts, "period_end": p.period_end.isoformat(), "period_type": p.period_type} for p in rows]
+        last = max(rows, key=lambda p: p.period_end)
+        meta_by[iid] = {"source": src, "currency": last.currency, "unit": last.unit, "ingested_at": last.ingested_at.isoformat(),
+                        "is_demo": last.is_demo, "source_url": last.source_url, "other_sources": sorted(k for k in groups if k != src)}
 
     equities = [i for i in insts if i.instrument_type != "INDEX"]
     bundles: dict[int, dict[str, MetricValue]] = {}

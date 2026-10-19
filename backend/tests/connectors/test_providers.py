@@ -129,7 +129,8 @@ async def test_kite_requires_login_then_authorises(mock_mcp, mock_state):
     k = kite(mock_mcp)
     await k.start()
     st = await k.auth_state()
-    assert st["state"] == "login_required" and st["login_url"].startswith("http")
+    assert st["state"] == "login_required" and not st["login_url"], "a status check never issues a login link"
+    assert (await k.login_link())["login_url"].startswith("http"), "the link is issued when the user asks for it"
     with pytest.raises(ProviderUnavailable) as e:
         await k.get_quotes(["DEMOIT01"])
     assert "login" in str(e.value).lower()

@@ -12,10 +12,13 @@ Tool errors are raised, never returned, so an error can never be cached as a val
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -92,11 +95,15 @@ class McpClient:
         self._connect_lock = asyncio.Lock()
         self._session_id: str | None = None
         self._protocol: str | None = None
+        self.session_store: Path | None = None  # set for servers that bind an authorisation to the session (Kite)
+        self.restored_session = False
         self._id = 0
         self.advertised: dict[str, ToolInfo] = {}
         self.server_info: dict[str, Any] = {}
         self.connected = False
         self.discovered_at: datetime | None = None
+        self.session_resets = 0
+        self.session_reset_at: datetime | None = None
         self._stats: dict[str, Any] = {"calls": 0, "errors": 0, "retries": 0, "latency_ms": None, "last_success_at": None,
                                        "last_error": None, "last_error_at": None}
 
@@ -139,7 +146,8 @@ class McpClient:
         body = self._decode(r, payload.get("id"))
         if r.status_code >= 400:
             msg = (body or {}).get("error", {}).get("message") if isinstance(body, dict) else None
-            if self._session_id and msg and "session" in msg.lower():
+            # Kite answers a forgotten session with HTTP 400, text/plain "Invalid session ID" (no JSON body).
+            if self._session_id and "session" in (msg or r.text[:200]).lower():
                 raise _SessionExpired(msg)
             raise McpToolError(f"{self.name} rejected the request (HTTP {r.status_code}): {msg or r.text[:200]}")
         if sid := r.headers.get("mcp-session-id"):
@@ -188,6 +196,54 @@ class McpClient:
         self.server_info = init.get("serverInfo") or {}
         await self._rpc("notifications/initialized", notify=True)
 
+    async def _new_session(self) -> None:
+        """The server forgot our session: start a new one and count it, so a provider whose
+        authorisation is bound to the session (Kite) can report that the login was lost."""
+        await self._handshake()
+        self.session_resets += 1
+        self.session_reset_at = self.clock.now()
+        self._save_session()
+
+    # ------------------------------------------------------------------ session persistence
+    def _load_session(self) -> bool:
+        """Reuse the session saved by a previous run of the API, so an authorisation bound to it survives a restart."""
+        if self.session_store is None or not self.session_store.is_file():
+            return False
+        try:
+            doc = json.loads(self.session_store.read_text())
+            if doc.get("url") != self._safe_url() or not doc.get("session_id"):
+                return False
+        except (OSError, ValueError):
+            return False
+        self._session_id, self._protocol = doc["session_id"], doc.get("protocol") or PROTOCOL_VERSION
+        self.server_info = doc.get("server_info") or {}
+        return True
+
+    def _save_session(self) -> None:
+        if self.session_store is None or not self._session_id:
+            return
+        try:
+            self.session_store.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.session_store.with_suffix(".tmp")
+            # Owner-only: the id is a handle to the account holder's approved session.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"url": self._safe_url(), "session_id": self._session_id, "protocol": self._protocol,
+                           "server_info": self.server_info, "saved_at": self.clock.now().isoformat()}, f)
+            os.replace(tmp, self.session_store)
+        except OSError:
+            pass  # persistence is a convenience; the live session keeps working without it
+
+    async def forget_session(self) -> None:
+        """Drop the current session (and the saved copy) and open a new, unauthorised one."""
+        if self.session_store is not None:
+            with contextlib.suppress(OSError):
+                self.session_store.unlink()
+        async with self._connect_lock:
+            await self._handshake()
+            self.restored_session = False
+            self._save_session()
+
     async def connect(self, refresh: bool = False) -> dict[str, ToolInfo]:
         """Handshake and discover the advertised tools. Safe to call repeatedly."""
         async with self._connect_lock:
@@ -198,11 +254,21 @@ class McpClient:
             except CircuitOpenError as e:
                 raise McpUnavailable(f"{self.name}: {e}") from e
             try:
-                await self._handshake()
+                # Re-reading the tools of a live session keeps that session: a broker login is bound to it,
+                # so a fresh handshake would silently discard the user's approval.
+                restored = not self._session_id and self._load_session()
+                if not (restored or (refresh and self.connected and self._session_id)):
+                    await self._handshake()
+                    self._save_session()
                 tools: dict[str, ToolInfo] = {}
                 cursor: str | None = None
                 for _ in range(20):
-                    res = await self._rpc("tools/list", {"cursor": cursor} if cursor else {})
+                    try:
+                        res = await self._rpc("tools/list", {"cursor": cursor} if cursor else {})
+                    except _SessionExpired:
+                        restored = False  # the saved session has ended on the server: start a fresh one
+                        await self._new_session()
+                        res = await self._rpc("tools/list", {"cursor": cursor} if cursor else {})
                     for t in (res or {}).get("tools", []):
                         tools[t["name"]] = ToolInfo(t["name"], t.get("description") or "", t.get("inputSchema") or {})
                     cursor = (res or {}).get("nextCursor")
@@ -214,6 +280,7 @@ class McpClient:
                 self._breaker.failure()
                 raise McpUnavailable(str(e)) from e
             self.advertised, self.connected, self.discovered_at = tools, True, self.clock.now()
+            self.restored_session = self.restored_session or restored
             self._breaker.success()
             self._stats["last_success_at"] = self.clock.now()
             return self.tools
@@ -254,7 +321,7 @@ class McpClient:
             try:
                 res = await self._rpc("tools/call", params)
             except _SessionExpired:
-                await self._handshake()
+                await self._new_session()
                 res = await self._rpc("tools/call", params)
             ms = (time.perf_counter() - t0) * 1000
             prev = self._stats["latency_ms"]

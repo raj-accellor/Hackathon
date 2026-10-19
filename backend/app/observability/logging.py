@@ -10,12 +10,12 @@ from typing import Any
 import structlog
 
 _SECRET_KEYS = re.compile(r"authorization|token|secret|password|api[_-]?key|cookie", re.I)
-_SECRET_VALUES = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{8,}|(hf_)[A-Za-z0-9]{8,}|(token\s+[a-z0-9]+:)[A-Za-z0-9]{8,}", re.I)
+_SECRET_VALUES = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]{8,}|(sk-)[A-Za-z0-9_\-]{8,}|(token\s+[a-z0-9]+:)[A-Za-z0-9]{8,}", re.I)
 
 
 def redact(value: Any) -> Any:
     if isinstance(value, str):
-        return _SECRET_VALUES.sub(lambda m: (m.group(1) or m.group(2) or m.group(3)) + "[REDACTED]", value)
+        return _SECRET_VALUES.sub(lambda m: next(g for g in m.groups() if g) + "[REDACTED]", value)
     if isinstance(value, dict):
         return {k: "[REDACTED]" if _SECRET_KEYS.search(str(k)) else redact(v) for k, v in value.items()}
     if isinstance(value, list | tuple):

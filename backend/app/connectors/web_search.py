@@ -128,14 +128,29 @@ class DdgsSearch:
             ts = ts.replace(tzinfo=UTC)
         return ts.astimezone(self._tz).date().isoformat()
 
+    @staticmethod
+    def _no_results(e: Exception) -> bool:
+        # The library raises (rather than returning []) when a backend has nothing for the query.
+        return "no results" in str(e).lower()
+
     def _run(self, query: str, max_results: int) -> list[dict[str, Any]]:
         client = self._factory()
-        rows = client.news(query, max_results=max_results, region=self.region) or []
+        try:
+            rows = client.news(query, max_results=max_results, region=self.region) or []
+        except Exception as e:
+            if not self._no_results(e):
+                raise
+            rows = []
         items = [{"title": r.get("title"), "url": r.get("url"), "snippet": r.get("body"), "published": self._day(r.get("date"))} for r in rows]
         # newest first; undated items last
         items.sort(key=lambda i: i["published"] or "", reverse=True)
         if not items:
-            rows = client.text(query, max_results=max_results, region=self.region) or []
+            try:
+                rows = client.text(query, max_results=max_results, region=self.region) or []
+            except Exception as e:
+                if not self._no_results(e):
+                    raise
+                rows = []
             items = [{"title": r.get("title"), "url": r.get("href") or r.get("url"), "snippet": r.get("body"), "published": None} for r in rows]
         return items
 
@@ -186,8 +201,12 @@ class _HttpSearch:
 class BraveSearch(_HttpSearch):
     name = "brave"
 
+    def __init__(self, api_key: str, timeout: float = 15.0, url: str = "", transport: httpx.AsyncBaseTransport | None = None) -> None:
+        super().__init__(api_key, timeout, transport)
+        self._url = url  # WEB_SEARCH_BASE_URL
+
     async def search(self, query: str, max_results: int = 8) -> list[dict[str, Any]]:
-        req = self._http.build_request("GET", "https://api.search.brave.com/res/v1/news/search",
+        req = self._http.build_request("GET", self._url,
                                        headers={"X-Subscription-Token": self._key, "Accept": "application/json"},
                                        params={"q": query[:400], "count": max_results})
         data = await self._send(req)
@@ -195,16 +214,18 @@ class BraveSearch(_HttpSearch):
                            "published": r.get("page_age") or r.get("age")} for r in data.get("results", [])], self.name)
 
 
-def build_search(provider: str, api_key: str | None, timeout: float = 15.0,
-                 disabled_reason: str | None = None) -> NullSearch | DdgsSearch | BraveSearch:
+def build_search(provider: str, api_key: str | None, timeout: float = 15.0, disabled_reason: str | None = None,
+                 base_url: str | None = None) -> NullSearch | DdgsSearch | BraveSearch:
     if disabled_reason:
         return NullSearch(disabled_reason)
     if provider == "ddgs":
         return DdgsSearch(timeout)
-    if provider == "brave" and api_key:
-        return BraveSearch(api_key, timeout)
     if provider == "brave":
-        return NullSearch("WEB_SEARCH_PROVIDER is 'brave' but WEB_SEARCH_API_KEY is not set")
+        if not api_key:
+            return NullSearch("WEB_SEARCH_PROVIDER is 'brave' but WEB_SEARCH_API_KEY is not set")
+        if not base_url:
+            return NullSearch("WEB_SEARCH_PROVIDER is 'brave' but WEB_SEARCH_BASE_URL is not set")
+        return BraveSearch(api_key, timeout, base_url)
     if provider not in ("none", ""):
         return NullSearch(f"WEB_SEARCH_PROVIDER '{provider}' is not supported; use 'ddgs', 'brave' or 'none'")
     return NullSearch()

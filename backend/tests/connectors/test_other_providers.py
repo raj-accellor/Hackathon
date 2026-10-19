@@ -1,16 +1,13 @@
-"""Mocked contract tests: fundamentals files, web search, Hugging Face LLM.
+"""Mocked contract tests: fundamentals files and web search. (The LLM client: test_llm_provider.py.)
 No test here calls a paid or external service."""
 
 import json
-import logging
 
 import httpx
 import pytest
-from pydantic import BaseModel
 
 from app.connectors.base import ProviderUnavailable
 from app.connectors.fundamentals_file import FileFundamentalsProvider, FundamentalsValidationError
-from app.connectors.llm import HuggingFaceLLM, LLMBudgetExceeded, LLMInvalidOutput, LLMUnavailable
 from app.connectors.web_search import BraveSearch, DdgsSearch, NullSearch, build_search
 from app.devtools import demo_data as dd
 
@@ -139,120 +136,22 @@ async def test_ddgs_failure_raises_unavailable_not_empty_success():
 
 
 async def test_search_failure_raises_unavailable_not_empty_success():
-    s = BraveSearch("k", transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    s = BraveSearch("k", url="https://search.example/news", transport=httpx.MockTransport(lambda r: httpx.Response(500)))
     with pytest.raises(ProviderUnavailable):
         await s.search("x")
 
 
-# ------------------------------------------------------------ LLM
-
-class Out(BaseModel):
-    answer: str
-    score: int
+def test_brave_endpoint_comes_from_settings_not_code():
+    assert "WEB_SEARCH_BASE_URL" in build_search("brave", "key").status()["reason"]
+    assert build_search("brave", "key", base_url="https://search.example/news").name == "brave"
 
 
-def llm(handler, **kw):
-    kw.setdefault("daily_budget", 10)
-    return HuggingFaceLLM(token="hf_SECRET", model_id="zai-org/GLM-test", enabled=True, transport=httpx.MockTransport(handler), max_retries=0, **kw)
-
-
-def _resp(content, usage=None):
-    return httpx.Response(200, json={"choices": [{"message": {"content": content}}], "usage": usage or {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
-
-
-def test_llm_unavailable_without_token_or_model_or_flag():
-    assert HuggingFaceLLM(token=None, model_id="m", enabled=True).available is False
-    assert HuggingFaceLLM(token="t", model_id=None, enabled=True).available is False
-    assert HuggingFaceLLM(token="t", model_id="m", enabled=False).available is False
-    assert "HF_TOKEN" in HuggingFaceLLM(token=None, model_id="m", enabled=True).status()["reason"]
-
-
-async def test_llm_sends_json_schema_request_and_validates_output():
-    seen = {}
-
-    def h(req: httpx.Request) -> httpx.Response:
-        seen["url"], seen["auth"], seen["body"] = str(req.url), req.headers["authorization"], json.loads(req.content)
-        return _resp('{"answer": "ok", "score": 3}')
-
-    m = llm(h)
-    out = await m.complete_validated("sys", "user", Out)
-    assert out == Out(answer="ok", score=3)
-    assert seen["url"] == "https://router.huggingface.co/v1/chat/completions" and seen["auth"] == "Bearer hf_SECRET"
-    b = seen["body"]
-    assert b["model"] == "zai-org/GLM-test" and b["temperature"] <= 0.2 and b["max_tokens"] > 0
-    assert b["response_format"]["type"] == "json_schema" and b["response_format"]["json_schema"]["schema"]["required"] == ["answer", "score"]
-    u = m.status()["usage"]
-    assert u["calls"] == 1 and u["total_tokens"] == 120 and u["model_id"] == "zai-org/GLM-test"
-
-
-async def test_llm_repairs_once_then_fails_cleanly():
-    replies = iter(['{"answer": "ok"}', '```json\n{"answer": "ok", "score": 2}\n```'])
-    bodies = []
-
-    def h(req):
-        bodies.append(json.loads(req.content))
-        return _resp(next(replies))
-
-    out = await llm(h).complete_validated("sys", "user", Out)
-    assert out.score == 2 and len(bodies) == 2
-    assert "did not match" in bodies[1]["messages"][-1]["content"]
-
-    m2 = llm(lambda r: _resp("not json at all"))
-    with pytest.raises(LLMInvalidOutput):
-        await m2.complete_validated("sys", "user", Out)
-    assert m2.status()["usage"]["calls"] == 2 and m2.status()["usage"]["invalid_outputs"] == 1
-
-
-async def test_llm_budget_cap_blocks_further_calls():
-    m = llm(lambda r: _resp('{"answer": "ok", "score": 1}'), daily_budget=1)
-    await m.complete_validated("s", "u", Out)
-    with pytest.raises(LLMBudgetExceeded):
-        await m.complete_validated("s", "u", Out)
-
-
-async def test_llm_http_error_is_unavailable_and_secret_never_logged(caplog):
-    caplog.set_level(logging.DEBUG)
-    m = llm(lambda r: httpx.Response(401, json={"error": "Invalid credentials in Authorization header"}))
-    with pytest.raises(LLMUnavailable):
-        await m.complete_validated("s", "u", Out)
-    assert "hf_SECRET" not in caplog.text and "hf_SECRET" not in json.dumps(m.status()) and "hf_SECRET" not in repr(m)
-    assert m.status()["usage"]["errors"] == 1
-
-
-async def test_dedicated_endpoint_url_overrides_router():
+async def test_brave_calls_the_configured_endpoint():
     seen = {}
 
     def h(req):
-        seen["url"] = str(req.url)
-        return _resp('{"answer": "a", "score": 1}')
+        seen["url"] = str(req.url.copy_with(query=None))
+        return httpx.Response(200, json={"results": []})
 
-    m = HuggingFaceLLM(token="t", model_id="m", enabled=True, endpoint_url="https://xyz.endpoints.huggingface.cloud", transport=httpx.MockTransport(h))
-    await m.complete_validated("s", "u", Out)
-    assert seen["url"] == "https://xyz.endpoints.huggingface.cloud/v1/chat/completions"
-
-
-@pytest.mark.parametrize("configured", ["https://router.huggingface.co/v1", "https://router.huggingface.co/v1/", "https://x.endpoints.huggingface.cloud",
-                                        "https://x.endpoints.huggingface.cloud/v1/chat/completions"])
-async def test_endpoint_url_is_normalised_whether_or_not_it_already_ends_in_v1(configured):
-    seen = {}
-
-    def h(req):
-        seen["url"] = str(req.url)
-        return _resp('{"answer": "a", "score": 1}')
-
-    m = HuggingFaceLLM(token="t", model_id="m", enabled=True, endpoint_url=configured, transport=httpx.MockTransport(h))
-    await m.complete_validated("s", "u", Out)
-    assert seen["url"].endswith("/v1/chat/completions") and "/v1/v1" not in seen["url"] and seen["url"].count("chat/completions") == 1
-
-
-async def test_unknown_model_id_reports_the_provider_message_and_suggests_available_ids():
-    def h(req: httpx.Request) -> httpx.Response:
-        if req.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [{"id": "zai-org/GLM-5.3-Flash"}, {"id": "zai-org/GLM-5.3"}, {"id": "meta-llama/Llama-3.3-70B-Instruct"}]})
-        return httpx.Response(400, json={"error": {"message": "The requested model 'z-ai/glm-5.3-flash' does not exist.", "code": "model_not_found"}})
-
-    m = HuggingFaceLLM(token="hf_SECRET", model_id="z-ai/glm-5.3-flash", enabled=True, transport=httpx.MockTransport(h), max_retries=0)
-    v = await m.check_availability()
-    assert v["ok"] is False and "does not exist" in v["reason"]
-    assert v["suggestions"][0] == "zai-org/GLM-5.3-Flash" and "meta-llama/Llama-3.3-70B-Instruct" not in v["suggestions"]
-    assert "hf_SECRET" not in json.dumps(m.status())
+    s = BraveSearch("k", url="https://search.example/news", transport=httpx.MockTransport(h))
+    assert await s.search("infy") == [] and seen["url"] == "https://search.example/news"

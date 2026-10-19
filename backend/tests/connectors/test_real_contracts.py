@@ -194,7 +194,7 @@ async def test_real_kite_generic_history_failure_before_login_is_reported_as_log
     assert e.value.state == "login_required"
     sent = next(a for n, a in calls if n == "get_historical_data")
     assert sent == {"instrument_token": 408065, "from_date": "2026-10-01 00:00:00", "to_date": "2026-10-09 23:59:59", "interval": "day"}
-    assert (await k.auth_state())["login_url"] == "https://mcp.kite.trade/authorize?session_id=abc"
+    assert (await k.login_link())["login_url"] == "https://mcp.kite.trade/authorize?session_id=abc"
     assert not [n for n, _ in calls if n not in ALLOWED_TOOLS]
 
 
@@ -215,7 +215,7 @@ async def test_login_stays_required_while_a_login_link_is_pending_even_if_errors
 
     k = KiteMcpProvider(server("kite_mcp", r, []))
     await k.start()
-    assert (await k.auth_state())["state"] == "login_required"  # this issues the login link
+    assert (await k.login_link())["state"] == "login_required"  # the user asks for the login link
     assert state["login_called"]
     for _ in range(3):
         with pytest.raises(ProviderUnavailable) as e:
@@ -237,8 +237,32 @@ async def test_generic_profile_failure_before_login_still_offers_the_login_link(
 
     k = KiteMcpProvider(server("kite_mcp", r, []))
     await k.start()
-    st = await k.auth_state()
+    st = await k.login_link()
     assert st["state"] == "login_required" and st["login_url"].endswith("session_id=xyz")
     with pytest.raises(ProviderUnavailable) as e:
         await k.get_history("INFY", date(2026, 10, 1), date(2026, 10, 9))
     assert e.value.state == "login_required"
+
+
+async def test_history_keeps_newer_pages_when_older_pages_are_beyond_the_server_window():
+    """Real NSE behaviour: pages older than its retention answer 'Symbol not found' / 'No data for index'."""
+    def responder(name, a):
+        if name == "get_stock_history" and a["endDate"] == "2026-10-05":
+            return {"hint": "Use search_symbols tool to find valid symbols", "error": "Symbol not found: INFY"}
+        if name == "get_index_history" and a.get("endDate") not in (None, "today"):
+            return {"error": "No data for index 'NIFTY 50' between 2025-10-08 and 2026-10-08"}
+        return nse_responder(name, a)
+
+    p = NseMcpProvider(server("nse_bhavcopy", responder, []), server("nse_cm_market", responder, []))
+    await p.start()
+    res = await p.get_history("INFY", date(2023, 1, 1), date(2099, 1, 1))
+    assert [d.date().isoformat() for d in res.frame.index] == ["2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"]
+    assert res.warnings and "history starts at 2026-10-06" in res.warnings[0] and "Symbol not found" in res.warnings[0]
+    idx = await p.get_history("NIFTY 50", date(2023, 1, 1), date(2099, 1, 1), "INDEX")
+    assert len(idx.frame) == 1 and "No data for index" in idx.warnings[0]
+
+
+async def test_history_first_page_error_is_still_a_failure():
+    p = await nse([])
+    with pytest.raises(ProviderUnavailable, match="Symbol not found: NOSUCHSYM"):
+        await p.get_history("NOSUCHSYM", date(2023, 1, 1), date(2026, 10, 9))

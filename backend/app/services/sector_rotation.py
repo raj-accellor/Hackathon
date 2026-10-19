@@ -15,7 +15,8 @@ from app.db.models import Instrument, SectorRotationSnapshot
 from app.domain import rrg
 from app.services.ingestion import load_bars
 
-MIN_COMPOSITE_MEMBERS = 3
+MIN_COMPOSITE_MEMBERS = 3  # for the benchmark fallback
+MIN_SECTOR_MEMBERS = 1  # a sector is always plotted when any constituent has history; thin composites are flagged
 STALE_DAYS = 5
 
 
@@ -51,12 +52,15 @@ def build_series(instruments: list[Instrument], bars: dict[int, pd.DataFrame], b
         series = close(idx_inst) if idx_inst else None
         kind, note = "index", f"sector index {idx_symbol}"
         if series is None:
-            series = rrg.equal_weight_composite({i.symbol: close(i) for i in members}, MIN_COMPOSITE_MEMBERS)
+            with_history = [i for i in members if close(i) is not None]
+            series = rrg.equal_weight_composite({i.symbol: close(i) for i in with_history}, MIN_SECTOR_MEMBERS)
             kind = "composite"
-            note = (f"equal-weight composite of {len(members)} constituent(s) in the tracked universe"
+            thin = "" if len(with_history) >= MIN_COMPOSITE_MEMBERS else (
+                f" ({', '.join(i.symbol for i in with_history)} only: a thin proxy for the sector, read with caution)")
+            note = (f"equal-weight composite of {len(with_history)} constituent(s) in the tracked universe{thin}"
                     + (f"; index {idx_symbol} has no history from the configured sources" if idx_symbol else "; no sector index mapped"))
             if series is None:
-                kind, note = "missing", f"fewer than {MIN_COMPOSITE_MEMBERS} constituents with history and no sector index"
+                kind, note = "missing", "no constituent with price history and no sector index"
         sectors[name] = {"series": series, "kind": kind, "note": note, "members": len(members), "index_symbol": idx_symbol}
     return {"benchmark": bench, "benchmark_kind": bench_kind, "sectors": sectors}
 

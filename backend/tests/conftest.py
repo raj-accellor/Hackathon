@@ -67,6 +67,8 @@ def mock_state(mock_mcp):
     STATE.forbidden_calls.clear()
     STATE.calls.clear()
     STATE.fail_next.clear()
+    STATE.kite_forget_session = False
+    STATE.link_ttl_seconds = 300.0
     return STATE
 
 

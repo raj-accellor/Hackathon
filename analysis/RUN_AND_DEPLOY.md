@@ -7,7 +7,7 @@ A start-here guide for someone who has never run the system. It covers:
 6. [Deploying to the cloud (Azure, AWS, Google Cloud Run)](#6-deploying-to-the-cloud)
 7. [Quick reference](#7-quick-reference)
 
-Live-mode setup (real NSE/Kite data, Hugging Face model, web search, uploading financial
+Live-mode setup (real NSE/Kite data, OpenRouter model, web search, uploading financial
 statements) and a troubleshooting table are in [`HOW_TO_RUN.md`](HOW_TO_RUN.md). This guide does
 not repeat them.
 
@@ -122,7 +122,7 @@ Set these as environment variables (secrets through the cloud's secret store, ne
 | `API_AUTH_TOKEN` | a long random value (**secret**); enter it under Data status → Access |
 | `CORS_ORIGINS` | the public URL of the web app, e.g. `https://markets.example.com` |
 | `NSE_BHAVCOPY_MCP_URL`, `NSE_CM_MARKET_MCP_URL`, `BROKER_MCP_URL` | as in `.env.example` |
-| `LLM_ENABLED`, `HF_TOKEN` (**secret**), `HF_MODEL_ID` | if you use the model |
+| `LLM_ENABLED`, `LLM_BASE_URL`, `LLM_API_KEY` (**secret**), `LLM_MODEL_ID`, `LLM_PROVIDER_NAME`, `LLM_EXTRA_HEADERS`, `LLM_EXTRA_BODY` | if you use the model (any OpenAI-compatible provider) |
 | `WEB_SEARCH_PROVIDER` | `ddgs`, or `none` |
 
 Generate a token with `openssl rand -hex 32`.
@@ -197,7 +197,7 @@ properties:
       - { name: acr-pass,  value: <ACRPASS> }
       - { name: db-url,    value: <DBURL> }
       - { name: api-token, value: <openssl rand -hex 32> }
-      - { name: hf-token,  value: <your HF token or leave a placeholder> }
+      - { name: openrouter-key, value: <your OpenRouter key or leave a placeholder> }
   template:
     scale: { minReplicas: 1, maxReplicas: 1 }
     containers:
@@ -215,7 +215,7 @@ properties:
           - { name: SCHEDULER_ENABLED, value: "true" }
           - { name: DATABASE_URL, secretRef: db-url }
           - { name: API_AUTH_TOKEN, secretRef: api-token }
-          - { name: HF_TOKEN, secretRef: hf-token }
+          - { name: LLM_API_KEY, secretRef: openrouter-key }
           - { name: CORS_ORIGINS, value: "https://<will be the app URL>" }
         probes:
           - { type: Liveness,  httpGet: { path: /health/live,  port: 8000 } }

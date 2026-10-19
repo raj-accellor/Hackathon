@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { useApi } from '../api/client'
+import { api, useApi } from '../api/client'
 import { ScreenerSchema, type Screener as ScreenerData } from '../api/schemas'
 import { PillarGlyph, pillarScores } from '../components/Score'
-import { Async, Badge, Button, Dialog, EmptyState, Missing, Notice, PageHeader, Panel, RiskBadge, StateBadge, cx } from '../components/ui'
+import { Async, Badge, Button, Dialog, EmptyState, Missing, Notice, PageHeader, Panel, RefreshButton, RiskBadge, StateBadge, cx } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtMetric } from '../lib/format'
 import { instrumentPath } from './Overview'
 
@@ -26,6 +27,66 @@ export function toApiFilters(rows: FilterRow[]) {
     .map((r) => ({ metric: r.metric, op: r.op, value: Number(r.value), ...(r.op === 'between' ? { value2: Number(r.value2) } : {}) }))
 }
 
+/** Metric chooser with a search box: the catalog has about 100 metrics, too many to scroll through. */
+function MetricPicker({ value, metrics, onChange }: { value: string; metrics: any[]; onChange: (k: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [open])
+  const ql = text.trim().toLowerCase()
+  const hits = metrics.filter((m) => !ql || m.label.toLowerCase().includes(ql) || m.key.includes(ql) || m.group.includes(ql))
+  const pick = (k: string) => {
+    onChange(k)
+    setOpen(false)
+    setText('')
+  }
+  const current = metrics.find((m) => m.key === value)
+  return (
+    <div ref={box} className="relative">
+      <button type="button" className="field min-w-[220px] text-left" aria-haspopup="listbox" aria-expanded={open} aria-label="Metric" onClick={() => setOpen(!open)}>
+        {current?.label ?? 'Choose a metric'} <span aria-hidden className="float-right text-ink-3">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-[300px] rounded-md border border-rule-strong bg-surface shadow-lg">
+          <input
+            autoFocus
+            className="field m-2 w-[calc(100%-1rem)]"
+            placeholder="Search metrics…"
+            aria-label="Search metrics"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setOpen(false)
+              if (e.key === 'Enter' && hits[0]) {
+                e.preventDefault()
+                pick(hits[0].key)
+              }
+            }}
+          />
+          <ul role="listbox" className="m-0 max-h-72 list-none overflow-y-auto p-0 pb-1">
+            {hits.length === 0 && <li className="px-3 py-2 text-xs text-ink-2">No metric matches “{text}”.</li>}
+            {hits.map((m) => (
+              <li key={m.key} role="option" aria-selected={m.key === value}>
+                <button type="button" className={cx('flex w-full justify-between gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-accent-soft', m.key === value && 'font-semibold')} onClick={() => pick(m.key)}>
+                  <span>{m.label}</span>
+                  <span className="text-xs text-ink-3">{m.group}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function FilterBuilder({ rows, onChange, metrics }: { rows: FilterRow[]; onChange: (r: FilterRow[]) => void; metrics: any[] }) {
   const groups = useMemo(() => {
     const g: Record<string, any[]> = {}
@@ -40,17 +101,7 @@ export function FilterBuilder({ rows, onChange, metrics }: { rows: FilterRow[]; 
         const unit = metrics.find((m) => m.key === r.metric)?.unit
         return (
           <div key={i} className="flex flex-wrap items-center gap-2" role="group" aria-label={`Filter ${i + 1}`}>
-            <select className="field min-w-[220px]" aria-label="Metric" value={r.metric} onChange={(e) => set(i, { metric: e.target.value })}>
-              {Object.entries(groups).map(([g, ms]) => (
-                <optgroup key={g} label={g[0].toUpperCase() + g.slice(1)}>
-                  {ms.map((m) => (
-                    <option key={m.key} value={m.key}>
-                      {m.label}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+            <MetricPicker value={r.metric} metrics={Object.values(groups).flat()} onChange={(k) => set(i, { metric: k })} />
             <select className="field" aria-label="Condition" value={r.op} onChange={(e) => set(i, { op: e.target.value })}>
               {Object.entries(OPS).map(([k, v]) => (
                 <option key={k} value={k}>
@@ -82,10 +133,25 @@ export function Screener() {
   const sectorsQ = useApi<any>(['sectors'], '/sectors')
   const [filters, setFilters] = useState<FilterRow[]>([])
   const [sectors, setSectors] = useState<string[]>([])
+  const [searchText, setSearchText] = useState('')
   const [search, setSearch] = useState('')
+  const qc = useQueryClient()
+  // Hovering a row loads the stock page's stored data in advance, so the click opens it at once.
+  const prefetch = (exchange: string, symbol: string) => {
+    const ref = `${exchange}:${symbol}`
+    qc.prefetchQuery({ queryKey: ['instrument', ref, { quote: false }], queryFn: () => api(`/instruments/${encodeURIComponent(ref)}`, { params: { quote: false } }), staleTime: 30_000 })
+  }
   const [sort, setSort] = useState('overall_score')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [page, setPage] = useState(1)
+  // The search box filters as you type, with a short pause so each keystroke does not send a request.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearch(searchText.trim())
+      setPage(1)
+    }, 250)
+    return () => clearTimeout(t)
+  }, [searchText])
   const [columns, setColumns] = useState<string[] | null>(null)
   const [pickCols, setPickCols] = useState(false)
   const [saved, setSaved] = useState<Saved[]>(loadSaved)
@@ -166,6 +232,7 @@ export function Screener() {
             </a>
           </>
         }
+        refresh={<RefreshButton keys={[['screener'], ['sectors']]} hint="Reload the screen with the latest computed metrics" />}
       />
       <Panel className="mb-4">
         <div className="grid gap-4 px-4 py-3 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
@@ -174,12 +241,6 @@ export function Screener() {
             {cat.data ? <FilterBuilder rows={filters} metrics={cat.data.metrics} onChange={(r) => (setFilters(r), reset())} /> : <div className="skeleton h-8 w-64" />}
           </div>
           <div className="space-y-3">
-            <div>
-              <label className="mb-1 block font-medium" htmlFor="scr-q">
-                Symbol or name
-              </label>
-              <input id="scr-q" className="field w-full" value={search} onChange={(e) => (setSearch(e.target.value), reset())} placeholder="Contains…" />
-            </div>
             <fieldset className="m-0 border-0 p-0">
               <legend className="mb-1 font-medium">Sectors</legend>
               <div className="flex flex-wrap gap-1.5">
@@ -218,6 +279,23 @@ export function Screener() {
         title={q.data ? `${q.data.total} of ${q.data.universe} instruments` : 'Results'}
         aside={q.data && <span title={fmtDateTime(q.data.computed_at)}>Metrics as of {fmtDate(q.data.as_of)} · NSE · INR</span>}
       >
+        <div className="flex flex-wrap items-center gap-2 border-b border-rule px-4 py-2.5">
+          <label htmlFor="scr-q" className="sr-only">
+            Search the results by symbol or name
+          </label>
+          <div className="relative w-full max-w-sm">
+            <svg aria-hidden width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3">
+              <circle cx="7" cy="7" r="4.8" />
+              <path d="M10.6 10.6 14 14" />
+            </svg>
+            <input id="scr-q" type="search" className="field w-full pl-8" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder={filters.length || sectors.length ? 'Search within the filtered results…' : 'Search by symbol or name…'} data-testid="screener-search" />
+          </div>
+          {search && (
+            <span className="text-xs text-ink-2">
+              Showing matches for “{search}”{filters.length || sectors.length ? ' within the filters' : ''}
+            </span>
+          )}
+        </div>
         <Async q={q} rows={12}>
           {(d) => (
             <>
@@ -229,7 +307,7 @@ export function Screener() {
                 </div>
               )}
               {d.items.length === 0 ? (
-                <EmptyState title={d.universe === 0 ? 'No metrics computed yet' : 'No instrument matches these filters'} action={d.universe === 0 ? <Link to="/status">Open Data status</Link> : <Button onClick={() => (setFilters([]), setSectors([]), setSearch(''))}>Clear filters</Button>}>
+                <EmptyState title={d.universe === 0 ? 'No metrics computed yet' : 'No instrument matches these filters'} action={d.universe === 0 ? <Link to="/status">Open Data status</Link> : <Button onClick={() => (setFilters([]), setSectors([]), setSearchText(''), setSearch(''))}>Clear filters</Button>}>
                   {d.universe === 0 ? 'Ingest prices first; the screener reads the latest computed metrics.' : 'Loosen a threshold or remove a filter.'}
                 </EmptyState>
               ) : (
@@ -256,7 +334,7 @@ export function Screener() {
                     </thead>
                     <tbody>
                       {d.items.map((it: any) => (
-                        <tr key={it.instrument_id}>
+                        <tr key={it.instrument_id} onMouseEnter={() => prefetch(it.exchange, it.symbol)} onFocus={() => prefetch(it.exchange, it.symbol)}>
                           <td>
                             <Link to={instrumentPath(it.symbol, it.exchange)} className="font-semibold">
                               {it.symbol}

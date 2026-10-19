@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Query, Response
-from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from sqlalchemy import case, func, select
 
 from app.api.deps import Actor, ApiError, Ctx, Db, meta, rate_limit, resolve_instrument
 from app.connectors.base import ProviderUnavailable
@@ -31,6 +32,7 @@ from app.db.models import (
 )
 from app.domain import reconcile, rrg, scoring
 from app.domain.theme_dsl import METRIC_CATALOG, Filter
+from app.services import ask as ask_service
 from app.services import ingestion, jobs, metrics, pipeline, screener, sector_rotation
 from app.services.jobs import audit
 
@@ -47,8 +49,44 @@ def inst_dict(i: Instrument) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ sources
+KITE_RECHECK_SECONDS = 30
+KITE_AUTHORIZED_RECHECK_SECONDS = 600
+KITE_RECHECK_TIMEOUT_SECONDS = 5.0
+
+
+async def _kite_session(c: Any, actor: str, check: Any) -> dict[str, Any]:
+    """Run a Kite session check; the first time it turns `authorized`, start the broker backfill."""
+    before = c.kite.health().get("auth", {}).get("state")
+    state = await check()
+    if state.get("state") == "authorized" and before != "authorized":
+        state = {**state, "backfill_job": await jobs.start_background(c, "broker_backfill", "broker_backfill", pipeline.broker_backfill_job,
+                                                                      "broker_login", actor)}
+    return state
+
+
+async def _recheck_kite(c: Any, actor: str) -> None:
+    """The status page must not show a stale "login required" after the user has approved access in Kite:
+    when the session is not known to be authorised and the last check is older than KITE_RECHECK_SECONDS
+    (KITE_AUTHORIZED_RECHECK_SECONDS when it is), ask Kite again (get_profile only; no new login link is issued). Bounded so the page never waits long."""
+    auth = c.kite.health().get("auth") or {}
+    if c.kite.client is None or auth.get("state") == "not_configured":
+        return
+    try:
+        age = (datetime.now(UTC) - datetime.fromisoformat(auth["checked_at"])).total_seconds()  # the connector stamps wall-clock time
+    except (KeyError, TypeError, ValueError):
+        age = None
+    # An authorised session is re-confirmed now and then too, so a session Kite has dropped is noticed.
+    if age is not None and age < (KITE_AUTHORIZED_RECHECK_SECONDS if auth.get("state") == "authorized" else KITE_RECHECK_SECONDS):
+        return
+    try:
+        await asyncio.wait_for(_kite_session(c, actor, c.kite.auth_state), KITE_RECHECK_TIMEOUT_SECONDS)
+    except TimeoutError:
+        pass  # the cached state is shown; the next load tries again
+
+
 @router.get("/sources/status")
 async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    await _recheck_kite(c, actor)
     nse_h = c.nse.health()
     kite_h = c.kite.health()
     counts = dict((await s.execute(select(PriceBar.provider, func.count()).group_by(PriceBar.provider))).all())
@@ -66,7 +104,7 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
         {"key": "kite_mcp", "label": "Zerodha Kite MCP", "role": "fallback: fills gaps, cross-checks NSE values", **kite_h},
         {"key": "fundamentals", "label": "Fundamentals files", "role": "financial statements (no MCP source provides them)", **c.fundamentals.status()},
         {"key": "web_search", "label": "Web search", "role": "news and filings for research", **c.search.status()},
-        {"key": "llm", "label": "LLM (Hugging Face)", "role": "research synthesis and concall classification", **c.llm.status()},
+        {"key": "llm", "label": f"LLM ({c.llm.label})", "role": "research synthesis and concall classification", **c.llm.status()},
     ]
     return {
         **meta(c), "connectors": connectors,
@@ -88,13 +126,30 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
 @router.post("/sources/broker/login", dependencies=[rate_limit("default")])
 async def broker_login(c: Ctx, actor: Actor) -> dict[str, Any]:
     """Current broker session state. When login is required the response carries the Kite
-    authorisation link for the account holder to open."""
-    return {**meta(c), "kite_mcp": await c.kite.auth_state()}
+    authorisation link for the account holder to open. The first check after the session becomes
+    authorised starts a backfill of instruments whose NSE history is short or stale."""
+    return {**meta(c), "kite_mcp": await _kite_session(c, actor, c.kite.auth_state)}
+
+
+@router.post("/sources/broker/login-link", dependencies=[rate_limit("default")])
+async def broker_login_link(c: Ctx, actor: Actor) -> dict[str, Any]:
+    """A freshly issued Kite authorisation link, requested when the user clicks to open it. Kite expires
+    links quickly, so the page never opens a link it received earlier."""
+    return {**meta(c), "kite_mcp": await _kite_session(c, actor, c.kite.login_link)}
+
+
+@router.post("/sources/broker/logout", dependencies=[rate_limit("default")])
+async def broker_logout(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Disconnect from Kite: the approved session and its saved copy are discarded."""
+    state = await c.kite.disconnect()
+    await audit(s, actor, "broker.logout", "connector", None, {"provider": "kite_mcp"})
+    await s.commit()
+    return {**meta(c), "kite_mcp": state}
 
 
 @router.post("/sources/rediscover", dependencies=[rate_limit("refresh")])
 async def rediscover(c: Ctx, actor: Actor) -> dict[str, Any]:
-    """Reconnect to the MCP servers and re-read their advertised tools."""
+    """Re-read the MCP servers' advertised tools. A live session is kept, so an approved Kite login survives."""
     await c.nse.start()
     await c.kite.start()
     return {**meta(c), "nse_mcp": c.nse.health(), "kite_mcp": c.kite.health()}
@@ -115,15 +170,33 @@ async def list_instruments(c: Ctx, s: Db, actor: Actor, q: Annotated[str | None,
     if instrument_type:
         stmt = stmt.where(Instrument.instrument_type == instrument_type)
     total = await s.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    rows = (await s.scalars(stmt.order_by(Instrument.symbol).offset((page - 1) * page_size).limit(page_size))).all()
+    order: list[Any] = [Instrument.symbol]
+    if q:
+        # With the whole market listed, "TCS" must rank the TCS row before every symbol that merely contains it.
+        qq = q.strip().upper()
+        order = [case((func.upper(Instrument.symbol) == qq, 0), (func.upper(Instrument.symbol).like(f"{qq}%"), 1),
+                      (func.upper(Instrument.name).like(f"{qq}%"), 2), else_=3), Instrument.symbol]
+    rows = (await s.scalars(stmt.order_by(*order).offset((page - 1) * page_size).limit(page_size))).all()
     return {**meta(c), "items": [inst_dict(i) for i in rows], "page": page, "page_size": page_size, "total": total}
 
 
+QUOTE_DEADLINE_SECONDS = 8.0
+
+
+@router.get("/instruments/{ref}/quote")
+async def instrument_quote(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Live quote only. Answers within QUOTE_DEADLINE_SECONDS: `status: pending` means the sources are
+    still being asked in the background and a repeat request will be served from the cache."""
+    inst = await resolve_instrument(s, ref)
+    return {**meta(c), "quote": await c.market_data.quote_within(inst.symbol, inst.instrument_type, QUOTE_DEADLINE_SECONDS)}
+
+
 @router.get("/instruments/{ref}")
-async def get_instrument(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+async def get_instrument(ref: str, c: Ctx, s: Db, actor: Actor, quote: bool = True) -> dict[str, Any]:
+    """`quote=false` returns stored data at once and leaves the live quote to `/instruments/{ref}/quote`."""
     inst = await resolve_instrument(s, ref)
     snap = await s.scalar(select(MetricSnapshot).where(MetricSnapshot.instrument_id == inst.id, MetricSnapshot.is_latest.is_(True)))
-    quote = await c.market_data.quote(inst.symbol, inst.instrument_type)
+    live_quote = await c.market_data.quote(inst.symbol, inst.instrument_type) if quote else None
     in_themes = (await s.execute(
         select(Theme.id, Theme.slug, Theme.name, Theme.category, ThemeSnapshotConstituent.rank, ThemeSnapshot.period, ThemeSnapshot.id)
         .join(ThemeSnapshot, ThemeSnapshot.theme_id == Theme.id).join(ThemeSnapshotConstituent, ThemeSnapshotConstituent.snapshot_id == ThemeSnapshot.id)
@@ -138,7 +211,8 @@ async def get_instrument(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any
         peers = sorted(({"instrument_id": i.id, "symbol": i.symbol, "name": i.name, **{k: m.flat.get(k) for k in cols},
                          "partial_score": m.score.get("partial_overall")} for m, i in rows), key=lambda r: r["symbol"])  # type: ignore[arg-type,return-value]
     return {
-        **meta(c, as_of=snap.as_of.isoformat() if snap is not None else None), "instrument": inst_dict(inst), "quote": quote,
+        **meta(c, as_of=snap.as_of.isoformat() if snap is not None else None), "instrument": inst_dict(inst), "quote": live_quote,
+        "quote_deferred": not quote,
         "snapshot": None if snap is None else {"as_of": snap.as_of.isoformat(), "computed_at": snap.computed_at.isoformat(),
                                                 "score": snap.score, "calculation_version": snap.versions, "is_demo": snap.is_demo},
         "themes": [{"theme_id": a, "slug": b, "name": n, "category": cat, "rank": r, "period": p, "snapshot_id": sid} for a, b, n, cat, r, p, sid in in_themes],
@@ -394,8 +468,47 @@ async def refresh_rotation(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ overview
+BREADTH_TIMEOUT_SECONDS = 6.0
+
+
+_breadth_tasks: set[asyncio.Task[Any]] = set()
+
+
+async def _market_breadth(c: Any, fresh: bool = False) -> dict[str, Any]:
+    """Live NSE breadth that never blocks an ordinary page load. A good result is cached for 5
+    minutes; a failure state (never a value) is remembered for 2 minutes. On a cache miss the check
+    runs in the background and the page shows "checking"; `fresh=True` (the refresh button) waits
+    for the check, bounded by BREADTH_TIMEOUT_SECONDS."""
+    if not fresh:
+        for key in ("overview:breadth", "overview:breadth_down"):
+            if (hit := await c.cache.get(key)) is not None:
+                return {**hit, "cache": "hit"}
+        if not _breadth_tasks:
+            task = asyncio.create_task(_check_breadth(c))
+            _breadth_tasks.add(task)
+            task.add_done_callback(_breadth_tasks.discard)
+        return {"state": "checking", "reason": "Checking NSE market breadth in the background; refresh in a few seconds."}
+    return await _check_breadth(c)
+
+
+async def _check_breadth(c: Any) -> dict[str, Any]:
+    try:
+        market = {"state": "ok", **await asyncio.wait_for(c.nse.market_breadth(), BREADTH_TIMEOUT_SECONDS)}
+        await c.cache.set("overview:breadth", market, 300)
+        await c.cache.delete_prefix("overview:breadth_down")
+    except ProviderUnavailable as e:
+        market = {"state": e.state, "reason": str(e)[:300], "checked_at": c.clock.now().isoformat()}
+        await c.cache.set("overview:breadth_down", market, 120)
+    except TimeoutError:
+        market = {"state": "unavailable", "reason": f"NSE market breadth did not answer within {BREADTH_TIMEOUT_SECONDS:g}s",
+                  "checked_at": c.clock.now().isoformat()}
+        await c.cache.set("overview:breadth_down", market, 120)
+    return market
+
+
 @router.get("/overview")
-async def overview(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+async def overview(c: Ctx, s: Db, actor: Actor, fresh: bool = False) -> dict[str, Any]:
+    """`fresh=true` (the page's refresh button) re-checks live sources instead of using cached states."""
     rows = await metrics.latest_rows(s)
     snap = await sector_rotation.latest(s, c.benchmark_symbol)
     as_of = max((m.as_of for m, _ in rows), default=None)
@@ -410,11 +523,7 @@ async def overview(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
     breadth = None
     if chg:
         breadth = {"advancing_1w": sum(1 for x in chg if x > 0), "declining_1w": sum(1 for x in chg if x < 0), "instruments": len(chg)}  # type: ignore[misc,operator]
-    market: dict[str, Any] = {"state": "missing"}
-    try:
-        market = {"state": "ok", **await c.nse.market_breadth()}
-    except ProviderUnavailable as e:
-        market = {"state": e.state, "reason": str(e)}
+    market = await _market_breadth(c, fresh)
     bench = await s.scalar(select(Instrument).where(Instrument.symbol == c.benchmark_symbol))
     bench_stats = None
     if bench is not None:
@@ -450,6 +559,41 @@ async def overview(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
         "data_state": "ok" if rows else "missing",
         "data_state_reason": None if rows else "No data ingested yet. Start a refresh from the Data status page.",
     }
+
+
+# ------------------------------------------------------------------ ask the market
+class AskIn(BaseModel):
+    question: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/ask", dependencies=[rate_limit("research")])
+async def ask(body: AskIn, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Interpret a question (LLM, rules fallback), fetch live MCP data with the database as fallback,
+    and answer from that evidence only."""
+    out = await ask_service.ask(c, s, body.question.strip())
+    await audit(s, actor, "ask", None, None, {"question": body.question[:200], "intent": out["plan"]["intent"],
+                                              "plan_source": out["plan_source"], "answer_source": out["answer_source"]})
+    await s.commit()
+    return {**meta(c), **out}
+
+
+@router.post("/instruments/{ref}/refresh", status_code=202, dependencies=[rate_limit("refresh")])
+async def refresh_instrument(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Fetch the latest bars for one instrument from the MCP sources and recompute metrics."""
+    inst = await resolve_instrument(s, ref)
+    sym = inst.symbol
+
+    async def job(cc: Any, ss: Any) -> dict[str, Any]:
+        prices = await ingestion.ingest_prices(cc, ss, [sym])
+        m = await metrics.compute_all(cc, ss)
+        await cc.cache.delete_prefix("api:")
+        await cc.cache.delete_prefix(f"quote:{sym.upper()}")
+        return {"prices": prices, "metrics": m}
+
+    job_id = await jobs.start_background(c, "instrument_refresh", f"instrument:{inst.id}", job, "manual", actor)
+    await audit(s, actor, "instrument.refresh", "instrument", inst.id, {"job_id": job_id})
+    await s.commit()
+    return {"job_id": job_id, "status": "running"}
 
 
 # ------------------------------------------------------------------ jobs and audit

@@ -8,6 +8,13 @@ async function ready(page: Page) {
     .toBeGreaterThan(0)
 }
 
+/** The metric chooser has a search box (about 100 metrics). Picks by typing, as a user would. */
+async function pickMetric(page: Page, search: string, label: string, n = 0) {
+  await page.getByRole('button', { name: 'Metric' }).nth(n).click()
+  await page.getByLabel('Search metrics').fill(search)
+  await page.getByRole('option', { name: new RegExp(`^${label}`) }).first().click()
+}
+
 test.beforeEach(async ({ page }) => {
   await ready(page)
 })
@@ -27,7 +34,7 @@ test('screener: add a filter, sort, see missing-value markers and export link', 
   await page.goto('/screener')
   await expect(page.getByRole('heading', { name: /of 48 instruments/ })).toBeVisible()
   await page.getByRole('button', { name: 'Add filter' }).click()
-  await page.getByLabel('Metric').selectOption('roe')
+  await pickMetric(page, 'roe', 'ROE')
   await page.getByLabel('Condition').selectOption('gte')
   await page.getByLabel('Value', { exact: true }).fill('15')
   await expect(page.getByRole('heading', { name: /of 48 instruments/ })).not.toHaveText('48 of 48 instruments')
@@ -44,9 +51,30 @@ test('screener: add a filter, sort, see missing-value markers and export link', 
   expect((await read()).every((n) => n >= 15)).toBe(true)
   await expect(page.getByRole('link', { name: 'Export CSV' })).toHaveAttribute('href', /export\.csv\?.*roe/)
   // a filter on a metric nobody has excludes everything and says why
-  await page.getByLabel('Metric').selectOption('return_5y')
+  await pickMetric(page, 'return 5y', 'Return 5Y')
   await expect(page.getByText(/left out because a filtered metric is not available/)).toBeVisible()
   await expect(page.getByText('No instrument matches these filters')).toBeVisible()
+})
+
+test('screener: search the filtered results by symbol, and open a stock without waiting for its quote', async ({ page }) => {
+  await page.goto('/screener')
+  await expect(page.getByRole('heading', { name: /of 48 instruments/ })).toBeVisible()
+  await page.getByRole('button', { name: 'Add filter' }).click()
+  await pickMetric(page, 'volatility', 'Volatility 1Y')
+  await page.getByLabel('Condition').selectOption('lt')
+  await page.getByLabel('Value', { exact: true }).fill('100')
+  // the search box sits on the results and searches within the filters
+  const search = page.getByTestId('screener-search')
+  await expect(search).toHaveAttribute('placeholder', 'Search within the filtered results…')
+  await search.fill('DEMOIT')
+  await expect(page.getByText('Showing matches for “DEMOIT” within the filters')).toBeVisible()
+  await expect.poll(async () => (await page.locator('tbody tr td:first-child a').allTextContents()).every((s) => s.startsWith('DEMOIT'))).toBe(true)
+  const first = page.locator('tbody tr td:first-child a').first()
+  const sym = (await first.textContent()) ?? ''
+  await first.hover() // loads the stock page's stored data in advance
+  await first.click()
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(sym)
+  await expect(page.getByText('Overall research score')).toBeVisible()
 })
 
 test('themes: browse, open a theme, see ranked members and methodology', async ({ page }) => {
@@ -81,12 +109,14 @@ test('custom theme: interpret, review assumptions, confirm and save', async ({ p
   await save.click()
   await expect(page.getByRole('heading', { name: /E2E quality/ })).toBeVisible()
   await expect(page.getByText('No snapshot yet', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: 'Refresh now' }).click()
-  await expect(page.getByText(/Refreshed: snapshot .* revision 1/)).toBeVisible({ timeout: 30_000 })
+  await page.getByTestId('theme-refresh').click()
+  await expect(page.getByText(/Fetched the latest data and re-ranked: snapshot .* revision 1/)).toBeVisible({ timeout: 60_000 })
 })
 
 test('instrument: score breakdown, entry setup, price provenance and conflicts', async ({ page }) => {
   await page.goto('/instrument/NSE:DEMOAUTO01')
+  // stored data renders first; the live quote arrives separately
+  await expect(page.getByText('Overall research score')).toBeVisible()
   await expect(page.getByText('Delayed quote')).toBeVisible()
   await expect(page.getByText(/NSE MCP, as of/)).toBeVisible()
   await expect(page.getByText('Overall research score')).toBeVisible()
@@ -124,16 +154,43 @@ test('sector rotation: chart, help panel, controls and table', async ({ page }) 
   await page.getByRole('button', { name: 'How to read this' }).click()
   await expect(page.getByText(/do not predict future performance/)).toBeVisible()
   await page.getByRole('button', { name: 'Close' }).click()
-  await page.getByLabel('Trail length').selectOption('4')
+  await page.getByLabel('Weeks computed').selectOption('4')
   await expect(page.getByText('Computed on demand, not stored')).toBeVisible()
   await expect(page.getByText(/trail 4 weeks/)).toBeVisible()
   await page.getByRole('row', { name: /^Chemicals/ }).getByRole('button', { name: 'Chemicals' }).click()
   await expect(page.getByLabel('Highlighted sectors')).toContainText('Chemicals')
 })
 
+test('sector rotation: a short tail by default that can be lengthened, shortened and stepped back', async ({ page }) => {
+  await page.goto('/rotation')
+  const tail = page.getByTestId('rrg-tail')
+  await expect(tail).toHaveValue('2')
+  await page.getByTestId('rrg-tail-more').click()
+  await expect(tail).toHaveValue('3')
+  await page.getByTestId('rrg-tail-less').click()
+  await page.getByTestId('rrg-tail-less').click()
+  await expect(tail).toHaveValue('1')
+  await expect(page.getByTestId('rrg-tail-less')).toBeDisabled()
+  const latest = (await page.getByTestId('rrg-as-of').textContent()) ?? ''
+  expect(latest).toMatch(/^Latest week · week ending \d{4}-\d{2}-\d{2}$/)
+  await page.getByTestId('rrg-back').click()
+  await page.getByTestId('rrg-back').click()
+  await expect(page.getByTestId('rrg-as-of')).toContainText('2 weeks back')
+  expect(await page.getByTestId('rrg-as-of').textContent()).not.toBe(latest)
+  await page.getByTestId('rrg-forward').click()
+  await expect(page.getByTestId('rrg-as-of')).toContainText('1 week back')
+  await page.getByRole('button', { name: 'Latest' }).click()
+  await expect(page.getByTestId('rrg-as-of')).toHaveText(latest)
+  // stepping back to the first computed week offers more history
+  for (let i = 0; i < 12 && (await page.getByTestId('rrg-back').isEnabled()); i++) await page.getByTestId('rrg-back').click()
+  await page.getByTestId('rrg-more-history').click()
+  await expect(page.getByText('Computed on demand, not stored')).toBeVisible()
+  await expect(page.getByText(/trail 12 weeks/)).toBeVisible()
+})
+
 test('concall follow-through: run the analysis and see commitment verdicts', async ({ page }) => {
   await page.goto('/concalls/NSE:DEMOIT01')
-  await page.getByRole('button', { name: /Run analysis/ }).click()
+  await page.getByRole('button', { name: 'Score stored calls' }).click()
   await expect(page.getByText('Follow-through score')).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText('Keyword heuristic, no language model')).toBeVisible()
   await expect(page.getByText(/Heuristic mode/)).toBeVisible()
@@ -165,9 +222,11 @@ test('data status: connectors, capability matrix, blocked order tools and schedu
   await expect(page.getByRole('row', { name: /Order placement/ })).toContainText('blocked by policy')
   await expect(page.getByRole('row', { name: /Financial statements/ }).first()).toContainText('No')
   await expect(page.getByText(/The broker fills a value only when NSE has none/)).toBeVisible()
-  await expect(page.getByText('HF_TOKEN is not set', { exact: false }).or(page.getByText('LLM_ENABLED is false', { exact: false })).first()).toBeVisible()
-  await page.getByRole('button', { name: 'Check broker session' }).click()
-  await expect(page.getByText('The broker session is authorised.')).toBeVisible()
+  await expect(page.getByText('LLM_API_KEY is not set', { exact: false }).or(page.getByText('LLM_ENABLED is false', { exact: false })).first()).toBeVisible()
+  // the Kite session panel is at the top and shows the state without a click
+  const kite = page.getByTestId('kite-session')
+  await expect(kite).toContainText('Logged in')
+  await expect(kite.getByRole('button', { name: 'Disconnect Kite' })).toBeVisible()
 })
 
 test('keyboard: skip link and instrument search work without a mouse', async ({ page }) => {

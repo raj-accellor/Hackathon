@@ -1,14 +1,16 @@
-import { useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
-import { ApiError } from '../api/client'
+import { useQueryClient } from '@tanstack/react-query'
+import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { ApiError, waitForJob } from '../api/client'
 import { MISSING, STATUS_LABEL } from '../lib/format'
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
 }
 
-export function Button({ variant = 'secondary', busy, className, children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'quiet' | 'danger'; busy?: boolean }) {
+export function Button({ variant = 'secondary', busy, className, children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'quiet' | 'danger' | 'accent'; busy?: boolean }) {
   const styles = {
-    primary: 'bg-ink text-surface border-ink hover:opacity-90',
+    primary: 'bg-rail text-white border-rail hover:bg-rail-2',
+    accent: 'bg-accent text-rail border-accent font-semibold hover:brightness-105',
     secondary: 'bg-surface text-ink border-rule-strong hover:border-ink-3',
     quiet: 'bg-transparent text-link border-transparent hover:bg-surface-2',
     danger: 'bg-surface text-loss border-loss/50 hover:bg-danger-soft',
@@ -18,7 +20,7 @@ export function Button({ variant = 'secondary', busy, className, children, ...re
       {...rest}
       disabled={rest.disabled || busy}
       aria-busy={busy || undefined}
-      className={cx('inline-flex min-h-[34px] items-center justify-center gap-2 rounded-md border px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50', styles, className)}
+      className={cx('inline-flex min-h-[34px] items-center justify-center gap-2 rounded-[7px] border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50', styles, className)}
     >
       {busy && <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden />}
       {children}
@@ -103,10 +105,10 @@ export function Missing({ reason, status }: { reason?: string | null; status?: s
 
 export function Panel({ title, aside, children, className, id }: { title?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string; id?: string }) {
   return (
-    <section id={id} className={cx('rounded-lg border border-rule bg-surface', className)}>
+    <section id={id} className={cx('panel rounded-[10px] border border-rule bg-surface', className)}>
       {(title || aside) && (
-        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-2.5">
-          {title && <h2 className="text-[15px] font-semibold">{title}</h2>}
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-3">
+          {title && <h2 className="text-[15.5px] font-semibold tracking-[-0.01em]">{title}</h2>}
           {aside && <div className="flex flex-wrap items-center gap-2 text-xs text-ink-2">{aside}</div>}
         </header>
       )}
@@ -115,14 +117,75 @@ export function Panel({ title, aside, children, className, id }: { title?: React
   )
 }
 
-export function PageHeader({ title, lede, actions }: { title: string; lede?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({ title, lede, actions, refresh }: { title: string; lede?: ReactNode; actions?: ReactNode; refresh?: ReactNode }) {
   return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div className="max-w-[70ch]">
-        <h1 className="text-[26px] font-semibold leading-tight">{title}</h1>
-        {lede && <p className="mt-1 text-ink-2">{lede}</p>}
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-x-6 gap-y-3 border-b border-rule pb-4">
+      <div className="max-w-[72ch]">
+        <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-0.02em]">{title}</h1>
+        {lede && <p className="mt-1.5 text-[14.5px] text-ink-2">{lede}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {(actions || refresh) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {actions}
+          {refresh}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type RefreshState = { phase: 'idle' | 'job' | 'reload' | 'done' | 'error'; message?: string; at?: Date }
+
+/**
+ * One refresh control for every page. `job` (optional) asks the server to fetch from the sources
+ * and returns a background job id; the button waits for it. `action` (optional) is any other call
+ * to make first. Then every query under `keys` is reloaded from the API.
+ */
+export function useRefresh({ keys, job, action, onDone }: { keys: unknown[][]; job?: () => Promise<{ job_id: number }>; action?: () => Promise<unknown>; onDone?: (j: any) => void }) {
+  const qc = useQueryClient()
+  const [st, setSt] = useState<RefreshState>({ phase: 'idle' })
+  const run = async () => {
+    try {
+      let detail: any = null
+      if (job) {
+        setSt({ phase: 'job', message: 'Fetching latest data from the sources' })
+        const { job_id } = await job()
+        detail = await waitForJob(job_id)
+        if (detail.status === 'failed') throw new ApiError(0, 'job_failed', detail.error ?? 'The refresh job failed. See Data status for details.')
+      }
+      if (action) {
+        setSt({ phase: 'job', message: 'Checking live sources' })
+        await action()
+      }
+      setSt({ phase: 'reload', message: 'Reloading' })
+      await Promise.all(keys.map((k) => qc.invalidateQueries({ queryKey: k })))
+      onDone?.(detail)
+      setSt({ phase: 'done', at: new Date() })
+    } catch (e) {
+      setSt({ phase: 'error', message: e instanceof Error ? e.message : 'Refresh failed' })
+    }
+  }
+  return { ...st, busy: st.phase === 'job' || st.phase === 'reload', run }
+}
+
+export function RefreshButton({ keys, job, action, label = 'Refresh', onDone, hint }: { keys: unknown[][]; job?: () => Promise<{ job_id: number }>; action?: () => Promise<unknown>; label?: string; onDone?: (j: any) => void; hint?: string }) {
+  const r = useRefresh({ keys, job, action, onDone })
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-ink-2" role="status" aria-live="polite">
+        {(r.phase === 'job' || r.phase === 'reload') && r.message}
+        {r.phase === 'done' && r.at && `Updated ${r.at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
+        {r.phase === 'error' && <span className="text-loss">{r.message}</span>}
+      </span>
+      <Button onClick={r.run} busy={r.busy} title={hint} data-testid="page-refresh">
+        {!r.busy && (
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+            <path d="M13.8 2.5v3.2h-3.2" />
+          </svg>
+        )}
+        {label}
+      </Button>
     </div>
   )
 }

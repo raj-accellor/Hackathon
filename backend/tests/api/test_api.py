@@ -25,6 +25,20 @@ async def test_health_and_request_id(demo):
     assert r.headers["x-request-id"] and r.headers["x-content-type-options"] == "nosniff"
 
 
+@pytest.mark.parametrize("path", ["/health", "/api/v1/health"])
+async def test_common_health_paths_answer_liveness_instead_of_404(demo, path):
+    r = await demo.client.get(path)
+    assert r.status_code == 200 and r.json() == {"status": "ok"}
+
+
+async def test_api_root_points_to_the_web_app_instead_of_404(demo):
+    # Opening the API port in a browser used to show a bare 404 and look like a broken app.
+    r = await demo.client.get("/")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["service"] == "api" and body["docs"] == "/docs" and "5173" in body["web_app"]
+
+
 async def test_errors_share_one_schema_with_request_id(demo):
     r = await demo.client.get(API + "/instruments/NSE:NOSUCH")
     assert r.status_code == 404
@@ -70,7 +84,9 @@ async def test_broker_login_state_endpoint(demo, mock_state):
     r = await demo.client.post(API + "/sources/broker/login")
     assert r.status_code == 200
     k = r.json()["kite_mcp"]
-    assert k["state"] == "login_required" and k["login_url"].startswith("http")
+    assert k["state"] == "login_required" and not k["login_url"]  # links are issued only on click (login-link)
+    link = (await demo.client.post(API + "/sources/broker/login-link")).json()["kite_mcp"]
+    assert link["login_url"].startswith("http")
     mock_state.kite_logged_in = True
     assert (await demo.client.post(API + "/sources/broker/login")).json()["kite_mcp"]["state"] == "authorized"
 
@@ -314,7 +330,11 @@ async def test_overview_summarises_market_sectors_themes_and_freshness(demo):
     assert d["benchmark"]["symbol"] == dd.BENCHMARK and len(d["benchmark"]["sparkline"]) == 60
     assert d["universe"]["instruments"] == 48 and d["universe"]["complete_scores"] == 48
     assert len(d["sectors"]) == 10 and len(d["top_scores"]) == 5 and d["theme_leaders"]
-    assert d["market_breadth"]["state"] == "ok" and d["market_breadth"]["source_id"] == "get_market_breadth"
+    assert d["market_breadth"]["state"] in ("ok", "checking")  # a plain page load never waits on NSE
+    fresh = await get(demo, "/overview", fresh="true")  # the refresh button waits for the live check
+    assert fresh["market_breadth"]["state"] == "ok" and fresh["market_breadth"]["source_id"] == "get_market_breadth"
+    again = await get(demo, "/overview")
+    assert again["market_breadth"]["state"] == "ok" and again["market_breadth"]["cache"] == "hit"
     assert d["jobs"] and d["as_of"] and d["is_demo"] is True
 
 
@@ -356,12 +376,13 @@ async def test_concall_analyzer_scores_follow_through_from_two_quarters(demo):
     weighted = sum(a["credit"] * a["weight"] for a in d["assessments"]) / sum(a["weight"] for a in d["assessments"]) * 100
     assert sc["value"] == pytest.approx(weighted, abs=0.06) and sc["formula"] and sc["label"] and sc["assessed"] == len(d["assessments"])
     ov = await get(demo, "/concalls")
-    assert ov["items"][0]["symbol"] == "DEMOIT01" and ov["items"][0]["score"] == sc["value"]
+    mine = next(i for i in ov["items"] if i["symbol"] == "DEMOIT01")  # other tests may analyse other companies first
+    assert mine["score"] == sc["value"]
 
 
 async def test_concall_needs_consecutive_quarters_and_valid_uploads(demo):
     r = await demo.client.post(API + "/instruments/NSE:DEMOIT02/concalls/analyze", json={})
-    assert r.status_code == 409 and "no concall transcripts" in r.json()["error"]["message"]
+    assert r.status_code == 409 and "no con-call transcripts" in r.json()["error"]["message"]
     form = {"fiscal_year": "2027", "quarter": "2", "source": "test upload"}
     short = await demo.client.post(API + "/instruments/NSE:DEMOIT02/concalls", data={**form, "text": "too short"})
     assert short.status_code == 422 and "too short" in short.json()["error"]["message"]
@@ -372,6 +393,19 @@ async def test_concall_needs_consecutive_quarters_and_valid_uploads(demo):
     assert r2.status_code == 409 and "Q1 FY2027" in r2.json()["error"]["message"]
     bad = await demo.client.post(API + "/instruments/NSE:DEMOIT02/concalls", data={**form, "text": body, "source_url": "http://127.0.0.1/x"})
     assert bad.status_code == 422
+    # Q1 FY2027 is missing, but Q4 FY2026 exists: the analysis proceeds with it and says so (reported 19 Oct 2026, HAL).
+    older = {"fiscal_year": "2026", "quarter": "4", "source": "test upload"}
+    assert (await demo.client.post(API + "/instruments/NSE:DEMOIT02/concalls", data={**older, "text": body})).status_code == 201
+    r3 = await demo.client.post(API + "/instruments/NSE:DEMOIT02/concalls/analyze", json={})
+    assert r3.status_code == 200, r3.text
+    out = r3.json()
+    assert out["previous"]["label"] == "Q4 FY2026" and out["current"]["label"] == "Q2 FY2027"
+    cmp = out["comparison"]
+    assert cmp == {**cmp, "requested_previous": "Q1 FY2027", "consecutive": False, "gap_quarters": 2}
+    assert "Q1 FY2027" in cmp["warning"] and "Q4 FY2026" in cmp["warning"] and cmp["warning"] in out["limitations"]
+    assert out["score"]["confidence"] != "High"
+    stored = await get(demo, "/instruments/NSE:DEMOIT02/concalls")
+    assert stored["latest"]["comparison"]["warning"] == cmp["warning"]
 
 
 # ------------------------------------------------------------ watchlists and alerts

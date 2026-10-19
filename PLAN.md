@@ -92,8 +92,9 @@ index quotes from NSE, Kite lookup by exact `id`. Recorded schemas live in
 
 - Kite MCP quotes and history against the real server (needs the account holder's login).
 - Brave search (no key). Web search through `ddgs` is verified.
-- Hugging Face GLM output: the token, route and model id `zai-org/GLM-5.3-Flash` are confirmed, but the
-  account returned HTTP 402 (no inference credits), so no real completion has been seen.
+- Real GLM output: the LLM client is provider-neutral (any OpenAI-compatible API, configured in `.env`).
+  OpenRouter's route and model id `z-ai/glm-5.3-flash` are confirmed, but no `LLM_API_KEY` is configured,
+  so no real completion has been seen.
 - Docker Compose, the Dockerfiles and the nginx config (Docker not installed). PostgreSQL and Redis
   themselves are verified.
 - CI workflow on a GitHub runner (each step passes locally).
@@ -110,7 +111,7 @@ index quotes from NSE, Kite lookup by exact `id`. Recorded schemas live in
 
 1. Log in to Kite from Data status and run a live refresh; confirm quote/history shapes, then
    record them as fixtures.
-2. Add `HF_TOKEN`/`HF_MODEL_ID` and verify the model id on Data status; run research and a concall
+2. Add `LLM_API_KEY` (and adjust `LLM_BASE_URL`/`LLM_MODEL_ID` if not using OpenRouter) and verify the model id on Data status; run research and a concall
    analysis with the model.
 3. Supply statement files for the tracked universe.
 4. Install Docker and run `docker compose --profile demo up --build`; apply the migration to PostgreSQL.

@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.connectors.fundamentals_file import FileFundamentalsProvider
 from app.connectors.kite_mcp import ALLOWED_TOOLS, KiteMcpProvider
-from app.connectors.llm import HuggingFaceLLM
+from app.connectors.llm import ChatCompletionsLLM, build_llm
 from app.connectors.mcp_client import McpClient
+from app.connectors.nse_filings import NseFilingsProvider, build_filings
 from app.connectors.nse_mcp import NseMcpProvider
 from app.connectors.web_search import build_search
 from app.core.cache import build_cache
@@ -30,8 +31,9 @@ class Container:
     nse: NseMcpProvider
     kite: KiteMcpProvider
     fundamentals: FileFundamentalsProvider
+    filings: NseFilingsProvider
     search: Any
-    llm: HuggingFaceLLM
+    llm: ChatCompletionsLLM
     market_data: CorrelatedMarketData
     limiters: dict[str, SlidingWindowLimiter] = field(default_factory=dict)
     scheduler: Any = None
@@ -66,6 +68,7 @@ class Container:
         await self.nse.close()
         await self.kite.close()
         await self.llm.close()
+        await self.filings.close()
         await self.cache.close()
         await self.engine.dispose()
 
@@ -99,11 +102,13 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
         client("nse_bhavcopy", urls["nse_bhavcopy"], demo_interval if demo_interval is not None else s.nse_mcp_min_interval_seconds),
         client("nse_cm_market", urls["nse_cm_market"], demo_interval if demo_interval is not None else s.nse_mcp_min_interval_seconds),
         is_demo=s.is_demo)
-    kite = KiteMcpProvider(
-        client("kite_mcp", urls["broker"], demo_interval if demo_interval is not None else s.broker_mcp_min_interval_seconds, ALLOWED_TOOLS),
-        is_demo=s.is_demo)
+    kite_client = client("kite_mcp", urls["broker"], demo_interval if demo_interval is not None else s.broker_mcp_min_interval_seconds,
+                         ALLOWED_TOOLS)
+    if kite_client is not None and s.kite_persist_session and not s.is_demo:
+        kite_client.session_store = s.kite_session_file
+    kite = KiteMcpProvider(kite_client, is_demo=s.is_demo, keepalive_seconds=s.kite_keepalive_seconds)
     cache = build_cache(s.redis_url)
-    engine = make_engine(s.database_url)
+    engine = make_engine(s.require_database_url())
     fundamentals_dir = s.fundamentals_dir / ("demo" if s.is_demo else "live")
     limiters = {
         "research": SlidingWindowLimiter(s.rate_limit_research_per_minute, 60, clock),
@@ -112,13 +117,10 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
     }
     return Container(
         settings=s, engine=engine, sessions=make_sessionmaker(engine), cache=cache, clock=clock, nse=nse, kite=kite,
-        fundamentals=FileFundamentalsProvider(fundamentals_dir, allow_demo=s.is_demo),
-        search=build_search(s.web_search_provider, _secret(s.web_search_api_key), s.web_search_timeout_seconds,
+        fundamentals=FileFundamentalsProvider(fundamentals_dir, allow_demo=s.is_demo), filings=build_filings(s),
+        search=build_search(s.web_search_provider, _secret(s.web_search_api_key), s.web_search_timeout_seconds, base_url=s.web_search_base_url,
                             disabled_reason="Web research is off in demo mode: demo symbols are fictional, so a real search "
                                             "would return unrelated results." if s.is_demo else None),
-        llm=HuggingFaceLLM(token=_secret(s.hf_token), model_id=s.hf_model_id, enabled=s.llm_enabled, endpoint_url=s.hf_endpoint_url,
-                           router_url=s.hf_router_url, timeout=s.llm_timeout_seconds, max_retries=s.llm_max_retries,
-                           max_output_tokens=s.llm_max_output_tokens, temperature=s.llm_temperature,
-                           daily_budget=s.llm_daily_budget, daily_token_budget=s.llm_daily_token_budget),
+        llm=build_llm(s, _secret),
         market_data=CorrelatedMarketData(nse, kite, cache, s.cache_ttl_quote), limiters=limiters,
     )

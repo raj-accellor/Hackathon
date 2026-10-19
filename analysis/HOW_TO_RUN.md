@@ -163,7 +163,7 @@ Set by `DATA_MODE` in `.env`.
 | | `demo` (default in `.env.example`) | `live` |
 |---|---|---|
 | Market data | Local mock MCP servers, synthetic | Real NSE MCP and Kite MCP |
-| Symbols | Fictional, start with `DEMO` | Real NSE symbols from `backend/data/reference/nse_universe.csv` |
+| Symbols | Fictional, start with `DEMO` | Every NSE-listed equity (`UNIVERSE_SCOPE=all`), or the rows of `backend/data/reference/nse_universe.csv` |
 | Financial statements | Generated synthetic figures | Only what you upload (section 7) |
 | Concall transcripts | Two synthetic transcripts for `DEMOIT01` | Only what you upload |
 | Web research | Always off | `ddgs` by default |
@@ -196,9 +196,27 @@ start. To keep both, use two databases (two `DATABASE_URL` values).
    NSE_CM_MARKET_MCP_URL=https://mcp.nseindia.in/cmmkt/mcp
    BROKER_MCP_URL=https://mcp.kite.trade/mcp
    ```
-2. Choose the instruments: edit `backend/data/reference/nse_universe.csv`
-   (`symbol,name,sector,industry,sector_kind,instrument_type,sector_index_symbol,isin`). Fewer
-   rows means a faster first refresh. The sector labels are a manually maintained reference.
+2. Choose the instruments.
+   - `UNIVERSE_SCOPE=all` (the default in `.env.example`) tracks **every NSE-listed equity** in
+     `UNIVERSE_SERIES` (EQ and BE, about 2,580 stocks). The list comes from NSE's `EQUITY_L.csv`
+     (`NSE_EQUITY_LIST_URL`).
+   - Sectors are NSE's industry classification from the Nifty Total Market constituents file
+     (`NSE_INDUSTRY_LIST_URL`), which covers about 750 stocks.
+   - Other stocks take the sector shared by NSE-classified stocks with the same NSE industry label
+     (`smIndustry` on the company's NSE announcements, e.g. "Computers - Software"). A label is used
+     only when at least 60% of those stocks agree; otherwise the stock stays unclassified. The rule
+     and the counts are shown as the instrument's classification source.
+   - Labels are kept in `backend/var/nse_filings/industry_labels.json` and fetched by the daily
+     instruments job.
+   - Prices for the whole market come from NSE's daily bhavcopy (`NSE_BHAVCOPY_URL_TEMPLATE`): one
+     file per trading day for all stocks. Splits and bonus issues are back-adjusted using NSE's
+     market-wide corporate-actions list.
+   - `UNIVERSE_SCOPE=reference` tracks only the rows in `backend/data/reference/nse_universe.csv`
+     (`symbol,name,sector,industry,sector_kind,instrument_type,sector_index_symbol,isin`). That file is
+     also used with `all`: for indices, for the sector-index mapping, and for hand-checked sectors,
+     which override NSE's.
+   - Financial statements for ~2,580 companies are fetched over several refreshes:
+     `NSE_FILINGS_MAX_COMPANIES_PER_RUN` (400) per run, companies without statements first.
 3. Optional check of the real servers with the app's own connectors:
    ```bash
    cd backend && DATA_MODE=live uv run python ../scripts/check_connectors.py --symbol INFY && cd ..
@@ -208,10 +226,11 @@ start. To keep both, use two databases (two `DATABASE_URL` values).
    session**, open the Kite link, approve read-only access in Kite, then check again. The approval
    belongs to the running API process and Kite expires it daily; repeat after a restart. Without
    it the system runs on NSE data alone and shows the broker as "login required".
-6. **Data status → Refresh all data**. NSE's history tool returns three months per call, so three
-   years for one stock is about 12 calls; 12 stocks with one year took a little over three minutes
-   in testing. Use `HISTORY_YEARS=1` or a shorter universe to go faster. Later refreshes fetch
-   only recent bars.
+6. **Data status → Refresh all data**. With `UNIVERSE_SCOPE=all`, the first refresh downloads one
+   bhavcopy file per trading day: three years is about 800 files (~200 KB each), roughly 7 minutes
+   at `NSE_FILINGS_MIN_INTERVAL_SECONDS=0.5`. Files are cached in `backend/var/nse_filings`, so later
+   refreshes download only new days. Indices and the reference stocks also use the per-symbol NSE
+   MCP history tool, which returns three months per call.
 
 The NSE MCP servers are sometimes slow or return 502/504. Calls retry, then the source shows
 "unavailable" with the reason; stored data keeps being served.
@@ -243,19 +262,45 @@ curl -X PUT "http://127.0.0.1:8000/api/v1/instruments/NSE:INFY/financials" \
 
 Metrics are recomputed straight after an upload.
 
-### Language model (GLM through Hugging Face)
+### Language model (any OpenAI-compatible provider)
+
+The app calls `POST {LLM_BASE_URL}/chat/completions`. No provider is built into the code: which
+one is used is decided only by these `.env` values. For OpenRouter (create a key at
+https://openrouter.ai/settings/keys and add credits):
 
 ```bash
 LLM_ENABLED=true
-HF_TOKEN=<your token>
-HF_MODEL_ID=zai-org/GLM-5.3-Flash
-# HF_ENDPOINT_URL=          # only for a dedicated Inference Endpoint; with or without /v1
+LLM_PROVIDER_NAME=OpenRouter                    # display name only
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=sk-or-v1-...                        # server-side only, never commit it
+LLM_MODEL_ID=z-ai/glm-5.3-flash                 # exact id from https://openrouter.ai/models
+LLM_EXTRA_HEADERS={"X-Title": "Markets Intelligence"}
+LLM_EXTRA_BODY={"usage": {"include": true}, "reasoning": {"effort": "low", "exclude": true}}
+#   usage: OpenRouter reports each call's cost. reasoning: GLM is a reasoning model; its thinking counts
+#   against LLM_MAX_OUTPUT_TOKENS (6000), and without a low effort a long prompt can leave no answer.
+LLM_RESPONSE_FORMAT=json_schema
+LLM_VERIFY_MODEL_LIST=true
 ```
 
-Data status → Language model shows whether the id was verified, the provider's error if not, and
-similar ids if it looks mistyped. The Hugging Face account needs Inference Providers credits;
-without them the provider answers HTTP 402 and the app falls back to rule-based summaries.
-`LLM_DAILY_BUDGET` and `LLM_DAILY_TOKEN_BUDGET` cap daily use.
+To use another provider, change the same keys, for example:
+
+| Provider | `LLM_BASE_URL` | Notes |
+|---|---|---|
+| OpenAI | `https://api.openai.com/v1` | clear `LLM_EXTRA_BODY` |
+| Groq | `https://api.groq.com/openai/v1` | clear `LLM_EXTRA_BODY` |
+| Together | `https://api.together.xyz/v1` | clear `LLM_EXTRA_BODY` |
+| Ollama (local) | `http://localhost:11434/v1` | `LLM_API_KEY=ollama`, `LLM_RESPONSE_FORMAT=json_object`, `LLM_VERIFY_MODEL_LIST=false` |
+
+`LLM_RESPONSE_FORMAT` is `json_schema` (strict structured output), `json_object`, or `none`; with
+the last two the JSON schema is sent in the prompt instead. `LLM_BASE_URL` is used as written,
+so a provider whose compatible API is not under `/v1` works too.
+
+Restart the API. Data status → Language model shows the provider name, the base URL, whether the
+model id is in the provider's model list (checked without spending credits), the provider's error
+if a call fails (for example HTTP 402 when the account has no credits), similar ids if it looks
+mistyped, and today's calls, tokens and cost when the provider reports it. Without a working
+model, research, concall analysis, "Ask the market" and the theme AI filter use rule-based
+fallbacks and say so. `LLM_DAILY_BUDGET` and `LLM_DAILY_TOKEN_BUDGET` cap daily use.
 
 ### Web research
 
@@ -442,7 +487,7 @@ cd ../frontend && npm install <package>
 
 ### Change what is tracked or how often
 
-- Instruments: `backend/data/reference/nse_universe.csv`, then **Refresh all data**.
+- Instruments: `UNIVERSE_SCOPE` (all NSE-listed equities, or `backend/data/reference/nse_universe.csv`), then **Refresh all data**.
 - Schedules: the `*_CRON` settings in `.env` (cron syntax, India time), then restart.
 - Rate limits, history length, cache lifetimes: see section 15.
 
@@ -525,7 +570,7 @@ Security audits: `uvx pip-audit --disable-pip --no-deps -r requirements.txt` (ba
 | Broker "login required" | Data status → Check broker session → open the link → approve → check again |
 | Scores "Insufficient data" in live mode | No financial statements uploaded, or not enough history; the page lists which pillars lack data |
 | 12-month return or 1-year volatility missing | Fewer than 253 daily bars; use `HISTORY_YEARS=2` or more and refresh |
-| Research says the model was not used | `LLM_ENABLED` off, missing token or model id, no Hugging Face credits (402), or daily budget reached; the notice says which |
+| Research says the model was not used | `LLM_ENABLED` off, missing token or model id, no OpenRouter credits (402), or daily budget reached; the notice says which |
 | "Too many refresh requests" | Rate limit; wait the seconds shown |
 | Ports 9100–9102 busy | An old mock server is running: `lsof -ti :9100,:9101,:9102 \| xargs kill`, or `MOCK_MCP_PORT=9200` |
 
@@ -553,7 +598,8 @@ their own lines.
 | `CORS_ORIGINS` | local Vite URLs | Allowed browser origins |
 | `NSE_BHAVCOPY_MCP_URL`, `NSE_CM_MARKET_MCP_URL`, `BROKER_MCP_URL` | the real MCP URLs | Used in live mode |
 | `MCP_*`, `BREAKER_*`, `*_MIN_INTERVAL_SECONDS` | see `.env.example` | Timeouts, retries, concurrency, pacing, circuit breaker |
-| `LLM_ENABLED`, `HF_TOKEN`, `HF_MODEL_ID`, `HF_ENDPOINT_URL`, `LLM_*` | off | Hugging Face model and its budgets |
+| `NSE_FILINGS_BASE_URL`, `NSE_FILINGS_DOCUMENT_HOSTS`, `NSE_FILINGS_MIN_INTERVAL_SECONDS`, `NSE_FILINGS_TIMEOUT_SECONDS` | `https://www.nseindia.com/api`, `nsearchives.nseindia.com`, 1 s, 30 s | Financial results (XBRL) and con-call transcripts as filed with NSE; empty URL disables. Fundamentals refresh with the daily price job |
+| `LLM_ENABLED`, `LLM_PROVIDER_NAME`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_ID`, `LLM_EXTRA_HEADERS`, `LLM_EXTRA_BODY`, `LLM_*` | off, none built in | The model provider (any OpenAI-compatible API) and its budgets |
 | `WEB_SEARCH_PROVIDER`, `WEB_SEARCH_API_KEY` | `ddgs` | Web research provider |
 | `*_CRON` | see section 12 | Job schedules (India time) |
 | `BENCHMARK_SYMBOL` | `NIFTY 50` | Benchmark for relative strength and sector rotation |

@@ -61,21 +61,21 @@ async def test_no_secret_or_order_surface_is_exposed(demo):
     assert not [p for p in doc["paths"] if any(w in p for w in ("order", "trade", "holding", "position", "portfolio"))]
     assert "place_order" not in json.dumps(doc)
     st = json.dumps((await demo.client.get(API + "/sources/status")).json())
-    for needle in ("hf_token", "api_secret", "access_token", "Authorization"):
+    for needle in ("llm_api_key", "api_secret", "access_token", "Authorization"):
         assert needle not in st
 
 
 def test_log_redaction_removes_tokens_and_secret_fields():
-    out = redact({"authorization": "Bearer abcdefghijklmnop", "note": "sent Bearer abcdefghijklmnop to host", "hf": "hf_ABCDEFGHIJKL",
+    out = redact({"authorization": "Bearer abcdefghijklmnop", "note": "sent Bearer abcdefghijklmnop to host", "key": "sk-ABCDEFGHIJKL",
                   "nested": {"api_key": "k", "ok": 1}, "kite": "token key123:ACCESSTOKEN99"})
     s = json.dumps(out)
-    assert "abcdefghijklmnop" not in s and "hf_ABCDEFGHIJKL" not in s and "ACCESSTOKEN99" not in s
+    assert "abcdefghijklmnop" not in s and "sk-ABCDEFGHIJKL" not in s and "ACCESSTOKEN99" not in s
     assert out["authorization"] == "[REDACTED]" and out["nested"] == {"api_key": "[REDACTED]", "ok": 1}
 
 
 def test_settings_do_not_print_secrets():
-    s = Settings(_env_file=None, hf_token="hf_SECRETVALUE", api_auth_token="AT", web_search_api_key="WK")
-    for secret in ("hf_SECRETVALUE", "'AT'", "'WK'"):
+    s = Settings(_env_file=None, llm_api_key="sk-SECRETVALUE", api_auth_token="AT", web_search_api_key="WK")
+    for secret in ("sk-SECRETVALUE", "'AT'", "'WK'"):
         assert secret not in repr(s)
 
 
@@ -239,8 +239,8 @@ def test_env_example_as_shipped_gives_safe_working_defaults():
 
     s = Settings(_env_file=Path(__file__).parents[3] / ".env.example")
     assert s.api_auth_token is None, "a blank API_AUTH_TOKEN must not switch authentication on"
-    assert s.redis_url is None and s.hf_token is None and s.hf_endpoint_url is None
-    assert s.web_search_api_key is None and s.hf_model_id is None
+    assert s.redis_url is None and s.llm_api_key is None and s.web_search_api_key is None
+    assert s.database_url and s.llm_base_url and s.llm_model_id, "endpoints come from .env, not from code"
     assert s.data_mode == "demo" and s.llm_enabled is False and s.web_search_provider == "ddgs"
     assert s.rrg_refresh_cron == "0 */12 * * *" and s.theme_refresh_cron == "30 6 1 * *"
 

@@ -36,7 +36,7 @@ PostgreSQL. Redis is optional.
         ▼                           ▼                            ▼
  PostgreSQL 16 (psycopg 3)    Redis 7 (optional)         External services
  system of record             cache + job locks          NSE MCP, Kite MCP,
-                                                         Hugging Face router, ddgs
+                                                         LLM provider (.env), ddgs
 
  Worker process (python -m app.workers.run): same code, runs only the schedule.
  Demo mode: mock MCP servers (:9100–9102) replace the external MCP servers.
@@ -356,7 +356,7 @@ integration tests, dependency audits and the browser tests.
 | Scheduling | APScheduler 3.11 |
 | MCP | Own Streamable HTTP client on httpx 0.28; MCP SDK 2.3 for the demo mock servers |
 | Numerics | numpy 2.5, pandas 3.0 |
-| LLM | Hugging Face Inference Providers (OpenAI-compatible), model `zai-org/GLM-5.3-Flash` |
+| LLM | Any OpenAI-compatible chat-completions provider set in `.env` (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_ID`); OpenRouter with `z-ai/glm-5.3-flash` in `.env.example` |
 | Web search | ddgs 9.16 (default), Brave (optional) |
 | Documents | pypdf 6.20 (transcript PDFs) |
 | Observability | structlog 26, prometheus-client 0.26 |

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, post, useAction, useApi } from '../api/client'
 import { InstrumentSearch, type InstrumentLite } from '../components/InstrumentSearch'
-import { Async, Badge, Button, Confirm, EmptyState, ErrorState, Missing, PageHeader, Panel, RiskBadge, StateBadge } from '../components/ui'
+import { Async, Badge, Button, Confirm, EmptyState, ErrorState, Missing, PageHeader, Panel, RefreshButton, RiskBadge, StateBadge } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtNum, fmtSigned, signClass } from '../lib/format'
 import { instrumentPath } from './Overview'
 
@@ -165,7 +165,11 @@ export function Watchlists() {
   const doDelete = useAction<void, any>(() => api(del!.type === 'watchlist' ? `/watchlists/${del!.id}` : `/alerts/${del!.id}`, { method: 'DELETE', params: { confirm: true } }).then((r) => (setDel(null), r)), [['watchlists'], ['alerts']])
   return (
     <>
-      <PageHeader title="Watchlists and alerts" lede="Track instruments and get notified in this app when a condition is met. Nothing here can place an order." />
+      <PageHeader
+        title="Watchlists and alerts"
+        lede="Track instruments and get notified in this app when a condition is met. Nothing here can place an order."
+        refresh={<RefreshButton keys={[['watchlists'], ['alerts']]} hint="Reload watchlist prices and alert states" />}
+      />
       <div className="mb-4 flex flex-wrap items-end gap-2">
         <label>
           <span className="mb-1 block font-medium">New watchlist</span>

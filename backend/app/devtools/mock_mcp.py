@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 from datetime import date
 from typing import Any
 
@@ -41,6 +42,8 @@ class MockState:
         self.calls: list[str] = []
         self.fail_next: dict[str, int] = {}
         self.port = 9100
+        self.link_ttl_seconds = 300.0  # like the real server, an authorisation link expires
+        self.kite_forget_session = False  # next request with a session id gets Kite's "Invalid session ID"
 
 
 STATE = MockState()
@@ -243,7 +246,7 @@ def build_kite() -> MCPServer:
     def login() -> str:
         if STATE.kite_logged_in:
             return "You are already logged in to the demo broker session."
-        return f"Please login to Kite by opening this URL: http://127.0.0.1:{STATE.port + 2}/authorize?token=demo"
+        return f"Please login to Kite by opening this URL: http://127.0.0.1:{STATE.port + 2}/authorize?token=demo&t={time.time():.3f}"
 
     @s.tool(description="Retrieve the user's profile information.")
     def get_profile() -> str:
@@ -329,14 +332,38 @@ def build_kite() -> MCPServer:
         return _forbidden("get_holdings")
 
     @s.custom_route("/authorize", methods=["GET"])
-    async def authorize(_request: Request) -> PlainTextResponse:
+    async def authorize(request: Request) -> PlainTextResponse:
+        try:
+            issued = float(request.query_params.get("t", "0"))
+        except ValueError:
+            issued = 0.0
+        if issued and time.time() - issued > STATE.link_ttl_seconds:
+            return PlainTextResponse("invalid authorize session", status_code=400)
         STATE.kite_logged_in = True
         return PlainTextResponse("Demo broker session authorised. You can close this tab.")
 
     return s
 
 
+def forgets_sessions(app: Any) -> Any:
+    """Like mcp.kite.trade after a session has been idle: HTTP 400, text/plain "Invalid session ID"."""
+
+    async def wrapped(scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and STATE.kite_forget_session and dict(scope["headers"]).get(b"mcp-session-id"):
+            STATE.kite_forget_session = False
+            await PlainTextResponse("Invalid session ID\n", status_code=400)(scope, receive, send)
+            return
+        await app(scope, receive, send)
+
+    return wrapped
+
+
 SERVERS = (build_bhavcopy, build_cm_market, build_kite)
+
+
+def _app(build: Any, kwargs: dict[str, Any]) -> Any:
+    app = build().streamable_http_app(**kwargs)
+    return forgets_sessions(app) if build is build_kite else app
 
 
 def make_uvicorn_servers(port: int, log_level: str = "warning", host: str = "127.0.0.1") -> list[uvicorn.Server]:
@@ -348,7 +375,7 @@ def make_uvicorn_servers(port: int, log_level: str = "warning", host: str = "127
 
         kwargs["transport_security"] = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     return [
-        uvicorn.Server(uvicorn.Config(build().streamable_http_app(**kwargs), host=host, port=port + n, log_level=log_level, lifespan="on"))
+        uvicorn.Server(uvicorn.Config(_app(build, kwargs), host=host, port=port + n, log_level=log_level, lifespan="on"))
         for n, build in enumerate(SERVERS)
     ]
 

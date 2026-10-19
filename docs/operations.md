@@ -9,7 +9,7 @@
   when API and worker are separate processes, so job locks and cache invalidation are shared.
 - Terminate TLS in front of `web`. Set `API_AUTH_TOKEN`, restrict `CORS_ORIGINS`, and keep the API
   port private.
-- Secrets (`HF_TOKEN`, `WEB_SEARCH_API_KEY`, `API_AUTH_TOKEN`, database password)
+- Secrets (`LLM_API_KEY`, `WEB_SEARCH_API_KEY`, `API_AUTH_TOKEN`, database password)
   come from the environment or a secrets manager. Only `.env.example` is committed.
 
 ## Health and monitoring
@@ -42,7 +42,7 @@ the database. Test a restore before relying on backups.
 | NSE MCP down or timing out | Nothing is lost; stored data is served and marked stale after 4 days. The circuit opens after 5 failures and retries after 60 s. Refresh when it recovers |
 | A server changed its tools | Data status → "Reconnect and re-read advertised tools", then `scripts/check_connectors.py`. Capabilities whose arguments cannot be bound show as not supported |
 | A refresh job failed | Job history shows the error. Earlier snapshots are unchanged. Fix the cause and rerun |
-| Rotate `API_AUTH_TOKEN` or `HF_TOKEN` | Change the secret and restart `api` and `worker` |
+| Rotate `API_AUTH_TOKEN` or `LLM_API_KEY` | Change the secret and restart `api` and `worker` |
 | Suspected leaked secret | Rotate it at the provider first, then as above; check `audit_events` and logs by request id |
 | LLM budget reached | Research and concall analysis fall back to rule-based output until the next UTC day, or raise `LLM_DAILY_BUDGET` |
 

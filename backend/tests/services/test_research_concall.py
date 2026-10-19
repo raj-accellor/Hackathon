@@ -8,7 +8,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.connectors.llm import HuggingFaceLLM
+from app.connectors.llm import ChatCompletionsLLM
 from app.db.models import Instrument
 from app.devtools import demo_concalls as dc
 from app.services import concall, research
@@ -92,7 +92,7 @@ def _llm(replies):
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(next(it))}}],
                                          "usage": {"prompt_tokens": 900, "completion_tokens": 300, "total_tokens": 1200}})
 
-    return HuggingFaceLLM(token="t", model_id="zai-org/GLM-test", enabled=True, transport=httpx.MockTransport(h), max_retries=0)
+    return ChatCompletionsLLM(api_key="t", base_url="https://llm.test/v1", model_id="zai-org/GLM-test", enabled=True, transport=httpx.MockTransport(h), max_retries=0)
 
 
 class FakeSearch:
@@ -192,7 +192,7 @@ async def test_concall_falls_back_to_heuristic_when_llm_fails(demo):
     def h(req):
         return httpx.Response(503)
 
-    llm = HuggingFaceLLM(token="t", model_id="m", enabled=True, transport=httpx.MockTransport(h), max_retries=0)
+    llm = ChatCompletionsLLM(api_key="t", base_url="https://llm.test/v1", model_id="m", enabled=True, transport=httpx.MockTransport(h), max_retries=0)
     async with demo.container.sessions() as s:
         inst = await s.scalar(select(Instrument).where(Instrument.symbol == dc.SYMBOL))
         d = await concall.analyze(await _with(demo, llm), s, inst)

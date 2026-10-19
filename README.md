@@ -50,11 +50,12 @@ seconds). Demo mode runs the real connector code against local mock MCP servers 
      statements file per company (`PUT /api/v1/instruments/{ref}/financials`, format in
      `docs/data-formats.md`). Until then fundamentals and valuation are shown as missing and scores
      are marked incomplete.
-   - **Language model**: set `LLM_ENABLED=true`, `HF_TOKEN`, `HF_MODEL_ID`.
+   - **Language model**: set `LLM_ENABLED=true`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL_ID` for any OpenAI-compatible provider (OpenRouter shown in `.env.example`). Switching provider means changing only these values.
    - **Web research**: on by default in live mode through `ddgs` (DuckDuckGo-backed, no API key).
      Set `WEB_SEARCH_PROVIDER=brave` with `WEB_SEARCH_API_KEY` to use Brave instead, or `none` to turn
      it off. It is always off in demo mode, because demo symbols are fictional.
-5. Edit `backend/data/reference/nse_universe.csv` to choose the instruments to track.
+5. `UNIVERSE_SCOPE=all` tracks every NSE-listed equity (prices from NSE's daily bhavcopy files); set it to
+   `reference` to track only the rows of `backend/data/reference/nse_universe.csv`.
 
 Check what the real servers advertise and whether the adapters can use them:
 
@@ -101,13 +102,13 @@ docs/                    architecture, methodology, data formats, operations
 
 | Area | Status |
 |---|---|
-| Backend unit, contract, integration, security and scheduler tests | 271 passing, 86% line coverage (`uv run pytest --cov=app`) |
+| Backend unit, contract, integration, security and scheduler tests | 314 passing, 3 skipped, 85% line coverage (`uv run pytest --cov=app`) on 2026-10-15 |
 | Frontend component tests | 14 passing |
-| Browser end-to-end tests (demo stack, desktop and mobile) | 13 passing |
+| Browser end-to-end tests (demo stack, desktop and mobile) | 29 passing on 2026-10-15; screenshots in `analysis/proof/`. One opt-in live check (`E2E_LIVE=1`) passes against real NSE data |
 | NSE MCP, real servers | Verified on 2026-10-12 with the application's connectors: tool discovery, quotes, paged history, index history, corporate actions, and a full pipeline run on 12 stocks |
 | Kite MCP, real server | Tool discovery, allowlist and instrument lookup verified. Quotes and history need an account login and were **not** verified against the real server; they are covered by mock contract tests only |
 | Web search (`ddgs`) | Verified on 2026-10-12: research generated through the API for INFY and RELIANCE in live mode with real NSE quotes and retrieved sources; unit tests use a stand-in client |
-| Hugging Face LLM | Route, token and model id (`zai-org/GLM-5.3-Flash`) confirmed on 2026-10-12, but the account had no inference credits (HTTP 402), so no completion was produced. Behaviour with real model output is covered by mocked tests only |
+| LLM through OpenRouter (configured in `.env`) | Verified on 2026-10-15 against the real OpenRouter API: the model id `z-ai/glm-5.3-flash` is in the live model list, a misspelt id is rejected before any paid call, and an invalid key is reported as HTTP 401. No key was configured, so no completion was produced; behaviour with real model output is covered by mocked tests only |
 | PostgreSQL and Redis | Verified on 2026-10-12 against PostgreSQL 16.2 and Redis 6.2: the Alembic migration applies with no drift, 82 integration tests pass on the migrated schema with Redis as cache and lock store, and the standalone worker ran a scheduled job |
 | Dependency audits | `pip-audit` and `npm audit --omit=dev`: no known vulnerabilities on 2026-10-12 |
 | Docker Compose, Dockerfiles, nginx | Written but **not run**: Docker was not available on the authoring machine |

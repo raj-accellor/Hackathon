@@ -27,7 +27,7 @@ from app.db.models import (
 from app.domain import theme_dsl
 from app.domain.theme_dsl import ThemeSpec
 from app.domain.themes_builtin import CATEGORIES
-from app.services import alerts, concall, jobs, research, themes
+from app.services import alerts, concall, ingestion, jobs, metrics, research, theme_ai, themes
 from app.services.jobs import audit
 
 router = APIRouter()
@@ -143,16 +143,25 @@ async def patch_theme(theme_id: str, body: ThemePatch, c: Ctx, s: Db, actor: Act
 
 
 @router.post("/themes/{theme_id}/refresh", status_code=202, dependencies=[rate_limit("refresh")])
-async def refresh_theme(theme_id: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+async def refresh_theme(theme_id: str, c: Ctx, s: Db, actor: Actor, fetch_latest: bool = True) -> dict[str, Any]:
+    """Re-rank the theme into a new snapshot revision. With `fetch_latest` (the default) the latest
+    bars are fetched from the MCP sources and metrics recomputed first; earlier snapshots are kept."""
     t = await _theme(s, theme_id)
     if not t.available:
         raise ApiError(409, "theme_unavailable", f"This theme needs data that is not configured: {', '.join(t.requires)}.")
     tid = t.id
 
     async def job(cc: Any, ss: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if fetch_latest:
+            prices = await ingestion.ingest_prices(cc, ss)
+            out["prices"] = {k: prices[k] for k in ("instruments", "ok", "failed", "bars")}
+            out["prices"]["failures"] = prices["failures"][:10]
+            out["metrics"] = await metrics.compute_all(cc, ss)
+            await cc.cache.delete_prefix("api:")
         theme = await ss.get(Theme, tid)
         snap = await themes.refresh_theme(cc, ss, theme, "manual")
-        return {"snapshot_id": snap.id, "period": snap.period, "revision": snap.revision, "constituents": len(snap.constituents)}
+        return {**out, "snapshot_id": snap.id, "period": snap.period, "revision": snap.revision, "constituents": len(snap.constituents)}
 
     job_id = await jobs.start_background(c, "theme_refresh", f"theme:{tid}", job, "manual", actor)
     await audit(s, actor, "theme.refresh", "theme", tid, {"job_id": job_id})
@@ -170,6 +179,24 @@ async def theme_snapshots(theme_id: str, c: Ctx, s: Db, actor: Actor, limit: Ann
          "theme_version": r.theme_version, "metrics_as_of": r.metrics_as_of.isoformat() if r.metrics_as_of else None,
          "constituents": len(r.constituents), "eligible_count": r.eligible_count, "top": [k.symbol for k in r.constituents[:5]],
          "versions": r.versions} for r in rows]}
+
+
+class RefineIn(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+
+
+@router.post("/themes/{theme_id}/ai-filter", dependencies=[rate_limit("research")])
+async def ai_filter_theme(theme_id: str, body: RefineIn, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Narrow a theme with a plain-language request. The model proposes DSL filters; they are
+    validated and evaluated deterministically. Nothing is saved."""
+    t = await _theme(s, theme_id)
+    try:
+        out = await theme_ai.refine(c, s, t, body.query.strip())
+    except theme_ai.RefineError as e:
+        raise ApiError(409, "no_data", str(e)) from e
+    await audit(s, actor, "theme.ai_filter", "theme", t.id, {"query": body.query[:200], "source": out["source"]})
+    await s.commit()
+    return {**meta(c), "theme_id": t.id, **out}
 
 
 # ------------------------------------------------------------------ research
@@ -204,9 +231,11 @@ async def list_concalls(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]
                           "current": a.result["current"]["label"], "previous": a.result["previous"]["label"]} for a in an],
             "latest": None if latest is None else {"analysis_id": latest.id, "created_at": latest.created_at.isoformat(), **latest.result},
             "llm": {"available": c.llm.available, "reason": c.llm.status()["reason"]},
+            "nse_filings": {"available": c.filings.available, "reason": c.filings.status()["reason"]},
+            "web_search": {"available": bool(c.search.available), "provider": c.search.name},
             "how_it_works": (concall.__doc__ or "").strip(),
             "data_state": "ok" if ts else "missing",
-            "data_state_reason": None if ts else "No transcripts uploaded. Upload two consecutive quarters to run the analysis."}
+            "data_state_reason": None if ts else "No transcripts stored yet. Fetch them from NSE to run the analysis."}
 
 
 @router.post("/instruments/{ref}/concalls", status_code=201, dependencies=[rate_limit("refresh")])
@@ -243,6 +272,21 @@ async def upload_concall(ref: str, c: Ctx, s: Db, actor: Actor, fiscal_year: Ann
 
 class AnalyzeIn(BaseModel):
     current_transcript_id: int | None = None
+
+
+@router.post("/instruments/{ref}/concalls/auto", status_code=202, dependencies=[rate_limit("research")])
+async def auto_concall(ref: str, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Fetch the company's con-call transcripts from NSE, check commitments on the web, and score follow-through."""
+    inst = await resolve_instrument(s, ref)
+    if inst.instrument_type == "INDEX":
+        raise ApiError(422, "unsupported_instrument", "Con-call analysis applies to companies, not indices.")
+    if not c.filings.available:
+        raise ApiError(409, "filings_unavailable", f"NSE filings are not available: {c.filings.status()['reason']}. "
+                                                   "Set NSE_FILINGS_BASE_URL, or upload transcripts instead.")
+    job_id = await jobs.start_background(c, "concall_auto", f"concall:{inst.id}", concall.auto_job(inst.id), "manual", actor)
+    await audit(s, actor, "concall.auto", "instrument", inst.id, {"job_id": job_id})
+    await s.commit()
+    return {**meta(c), "job_id": job_id, "status": "running"}
 
 
 @router.post("/instruments/{ref}/concalls/analyze", dependencies=[rate_limit("research")])

@@ -8,10 +8,11 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: [['list']],
-  use: { baseURL: 'http://127.0.0.1:5173', trace: 'retain-on-failure' },
+  use: { baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173', trace: 'retain-on-failure' },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1366, height: 850 } } },
     { name: 'mobile', use: { ...devices['Pixel 7'] }, grep: /@mobile/ },
   ],
-  webServer: { command: 'DATA_MODE=demo ../scripts/dev.sh', url: 'http://127.0.0.1:5173', reuseExistingServer: true, timeout: 180_000 },
+  // E2E_BASE_URL points the suite at an already-running demo stack (no server is started then).
+  webServer: process.env.E2E_BASE_URL ? undefined : { command: 'DATA_MODE=demo ../scripts/dev.sh', url: 'http://127.0.0.1:5173', reuseExistingServer: true, timeout: 180_000 },
 })

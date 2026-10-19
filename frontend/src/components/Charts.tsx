@@ -106,18 +106,35 @@ const QUADS = [
  * Sectors are identified by direct labels, not colour: ten or more sectors cannot be told apart by
  * hue safely. Up to three selected sectors take the validated highlight colours; the rest stay ink.
  */
-export function RRGChart({ sectors, selected, onToggle, visible }: { sectors: Record<string, RRGSector>; selected: string[]; onToggle: (name: string) => void; visible: Set<string> }) {
+export const DEFAULT_TAIL_WEEKS = 2
+
+export function RRGChart({ sectors, selected, onToggle, visible, onNeedMoreHistory }: { sectors: Record<string, RRGSector>; selected: string[]; onToggle: (name: string) => void; visible: Set<string>; onNeedMoreHistory?: () => void }) {
   const [zoom, setZoom] = useState(1)
   const [hover, setHover] = useState<{ name: string; pt: Pt; x: number; y: number } | null>(null)
+  const maxTail = useMemo(() => Math.max(1, ...Object.values(sectors).map((s) => s.trail?.length ?? 0)), [sectors])
+  const [tail, setTail] = useState(DEFAULT_TAIL_WEEKS)
+  const [back, setBack] = useState(0) // weeks stepped back from the latest observation
+  const maxBack = Math.max(0, maxTail - 1)
+  const offset = Math.min(back, maxBack)
+  const shown = Math.min(tail, maxTail - offset)
+  // `shown` weekly points ending `offset` weeks before the latest are drawn; the axes rescale to what is drawn.
+  const trailOf = (n: string) => {
+    const all = (sectors[n].trail ?? []) as Pt[]
+    const end = Math.max(1, all.length - offset)
+    return all.slice(Math.max(0, end - shown), end)
+  }
+  const anyName = Object.keys(sectors).find((n) => (sectors[n].trail?.length ?? 0) === maxTail)
+  const headDate = anyName ? trailOf(anyName).at(-1)?.date : undefined
   const W = 760
   const H = 520
   const M = { l: 52, r: 18, t: 16, b: 44 }
   const names = useMemo(() => Object.keys(sectors).filter((n) => sectors[n].status === 'ok' && (sectors[n].trail?.length ?? 0) > 0 && visible.has(n)).sort(), [sectors, visible])
   const span = useMemo(() => {
     let m = 1.5
-    for (const n of names) for (const p of sectors[n].trail ?? []) m = Math.max(m, Math.abs(p.rs_ratio - 100), Math.abs(p.rs_momentum - 100))
+    for (const n of names) for (const p of trailOf(n)) m = Math.max(m, Math.abs(p.rs_ratio - 100), Math.abs(p.rs_momentum - 100))
     return (m * 1.18) / zoom
-  }, [names, sectors, zoom])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [names, sectors, zoom, shown, offset])
   const sx = (v: number) => M.l + ((v - (100 - span)) / (2 * span)) * (W - M.l - M.r)
   const sy = (v: number) => M.t + (1 - (v - (100 - span)) / (2 * span)) * (H - M.t - M.b)
   const cx0 = sx(100)
@@ -131,7 +148,7 @@ export function RRGChart({ sectors, selected, onToggle, visible }: { sectors: Re
   // Direct labels at each head, nudged apart vertically so they do not collide.
   const labels = useMemo(() => {
     const ls = names.map((n) => {
-      const p = (sectors[n].trail as Pt[])[(sectors[n].trail as Pt[]).length - 1]
+      const p = trailOf(n)[trailOf(n).length - 1]
       return { n, x: sx(p.rs_ratio), y: sy(p.rs_momentum) }
     })
     ls.sort((a, b) => a.y - b.y)
@@ -140,7 +157,7 @@ export function RRGChart({ sectors, selected, onToggle, visible }: { sectors: Re
     }
     return new Map(ls.map((l) => [l.n, l]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [names, sectors, span])
+  }, [names, sectors, span, shown, offset])
   const colorOf = (n: string) => {
     const i = selected.indexOf(n)
     return i >= 0 ? SERIES[i] : 'var(--ink)'
@@ -150,6 +167,39 @@ export function RRGChart({ sectors, selected, onToggle, visible }: { sectors: Re
     <div className="relative">
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 pt-3">
         <p className="m-0 text-[13px] text-ink-2">Each line is one sector's weekly path; the labelled dot is the latest week. Select up to three sectors to highlight them.</p>
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2" role="group" aria-label="Tail length">
+          <span>Tail</span>
+          <Button onClick={() => setTail(Math.max(1, shown - 1))} disabled={shown <= 1} aria-label="Shorter tail" data-testid="rrg-tail-less">
+            −
+          </Button>
+          <input type="range" min={1} max={Math.max(1, maxTail - offset)} step={1} value={shown} onChange={(e) => setTail(Number(e.target.value))} aria-label="Tail length in weeks" data-testid="rrg-tail" className="w-24 accent-[var(--accent)]" />
+          <Button onClick={() => setTail(Math.min(maxTail - offset, shown + 1))} disabled={shown >= maxTail - offset} aria-label="Longer tail" data-testid="rrg-tail-more">
+            +
+          </Button>
+          <span className="num w-16 text-ink" aria-live="polite">
+            {shown} {shown === 1 ? 'week' : 'weeks'}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2" role="group" aria-label="Step through weeks">
+          <Button onClick={() => setBack(offset + 1)} disabled={offset >= maxBack} aria-label="One week earlier" data-testid="rrg-back">
+            ◀ Week
+          </Button>
+          <Button onClick={() => setBack(Math.max(0, offset - 1))} disabled={offset === 0} aria-label="One week later" data-testid="rrg-forward">
+            Week ▶
+          </Button>
+          <Button variant="quiet" onClick={() => setBack(0)} disabled={offset === 0}>
+            Latest
+          </Button>
+          <span className="text-ink" aria-live="polite" data-testid="rrg-as-of">
+            {offset === 0 ? 'Latest week' : `${offset} ${offset === 1 ? 'week' : 'weeks'} back`}
+            {headDate && ` · week ending ${headDate}`}
+          </span>
+          {offset >= maxBack && maxBack > 0 && onNeedMoreHistory && (
+            <button type="button" className="text-link underline-offset-2 hover:underline" onClick={onNeedMoreHistory} data-testid="rrg-more-history">
+              Earliest computed week · load more weeks
+            </button>
+          )}
+        </div>
         <div className="flex gap-1" role="group" aria-label="Zoom">
           <Button onClick={() => setZoom((z) => Math.min(z * 1.4, 6))} aria-label="Zoom in">
             +
@@ -194,7 +244,7 @@ export function RRGChart({ sectors, selected, onToggle, visible }: { sectors: Re
         </text>
         <g clipPath="url(#rrg-clip)">
           {names.map((n) => {
-            const trail = sectors[n].trail as Pt[]
+            const trail = trailOf(n)
             const col = colorOf(n)
             const dim = (focus && focus !== n) || (selected.length > 0 && !selected.includes(n) && focus !== n)
             const head = trail[trail.length - 1]

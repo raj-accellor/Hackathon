@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, api, post, useAction, useApi, waitForJob } from '../api/client'
-import { Async, Badge, Button, Confirm, Dialog, EmptyState, ErrorState, Missing, Notice, PageHeader, Panel, RiskBadge, StateBadge, Tabs, cx } from '../components/ui'
+import { Async, Badge, Button, Confirm, Dialog, EmptyState, ErrorState, Missing, Notice, PageHeader, Panel, RefreshButton, RiskBadge, StateBadge, Tabs, cx } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtMetric, fmtNum, fmtSigned, signClass } from '../lib/format'
 import { instrumentPath } from './Overview'
 import { FilterBuilder, toApiFilters, type FilterRow } from './Screener'
@@ -99,6 +99,160 @@ function CreateTheme({ open, onClose }: { open: boolean; onClose: () => void }) 
   )
 }
 
+/** Per-theme refresh: fetch the latest bars from the sources, recompute metrics, re-rank into a new snapshot revision. */
+function ThemeRefresh({ themeId, compact, onDone }: { themeId: number | string; compact?: boolean; onDone?: (j: any) => void }) {
+  const qc = useQueryClient()
+  const [st, setSt] = useState<{ phase: 'idle' | 'busy' | 'done' | 'error'; text?: string }>({ phase: 'idle' })
+  const go = async () => {
+    setSt({ phase: 'busy', text: 'Fetching latest prices' })
+    try {
+      const { job_id } = await post(`/themes/${themeId}/refresh`)
+      const j = await waitForJob(job_id)
+      if (j.status !== 'succeeded') throw new ApiError(0, 'job_failed', j.error ?? `Refresh ${j.status}`)
+      const p = j.detail.prices
+      setSt({ phase: 'done', text: `${j.detail.constituents} members${p ? `, prices updated for ${p.ok} of ${p.instruments}` : ''}` })
+      onDone?.(j)
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['themes'] }),
+        qc.invalidateQueries({ queryKey: ['theme', String(themeId)] }),
+        qc.invalidateQueries({ queryKey: ['theme-snapshots', String(themeId)] }),
+      ])
+    } catch (e) {
+      setSt({ phase: 'error', text: e instanceof Error ? e.message : 'Refresh failed' })
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button onClick={go} busy={st.phase === 'busy'} className={compact ? 'min-h-[28px] px-2 py-0.5 text-xs' : undefined} title="Fetch the latest prices from the sources, recompute metrics and re-rank this theme" data-testid="theme-refresh">
+        {st.phase === 'busy' ? 'Refreshing' : 'Refresh'}
+      </Button>
+      <span role="status" aria-live="polite" className={cx('text-xs', st.phase === 'error' ? 'text-loss' : 'text-ink-2')}>
+        {st.phase !== 'idle' && st.text}
+      </span>
+    </div>
+  )
+}
+
+const AI_EXAMPLES = ['only banks', 'low debt', 'the 10 least volatile', 'cheap versus sector peers', 'positive 6-month relative strength']
+
+/** Narrow the theme in plain language. The model proposes filters; the server applies them deterministically. */
+function AiFilter({ themeId, labels }: { themeId: string; labels: Record<string, { label: string; unit: string }> }) {
+  const [query, setQuery] = useState('')
+  const m = useAction<string, any>((qq) => post(`/themes/${themeId}/ai-filter`, { query: qq }))
+  const run = (qq?: string) => {
+    const v = (qq ?? query).trim()
+    if (v.length < 3 || m.isPending) return
+    setQuery(v)
+    m.mutate(v)
+  }
+  const d = m.data
+  const keys: string[] = d?.members?.[0] ? Object.keys(d.members[0].values) : []
+  return (
+    <Panel title="Narrow this theme with AI" className="mb-4" aside={<span>Applied to the latest data. Saved snapshots are not changed.</span>}>
+      <form
+        className="flex flex-col gap-2 px-4 pt-3 sm:flex-row"
+        onSubmit={(e) => {
+          e.preventDefault()
+          run()
+        }}
+      >
+        <label htmlFor="ai-filter" className="sr-only">
+          How should the theme be narrowed?
+        </label>
+        <input id="ai-filter" className="field w-full" placeholder="e.g. only IT companies with low debt" value={query} onChange={(e) => setQuery(e.target.value)} maxLength={500} />
+        <Button type="submit" variant="primary" busy={m.isPending} data-testid="ai-filter-submit">
+          Filter
+        </Button>
+      </form>
+      <div className="flex flex-wrap gap-1.5 px-4 pb-3 pt-2">
+        {AI_EXAMPLES.map((x) => (
+          <button key={x} type="button" onClick={() => run(x)} className="rounded-full border border-rule px-2.5 py-0.5 text-[12.5px] text-ink-2 hover:border-ink-3 hover:text-ink">
+            {x}
+          </button>
+        ))}
+      </div>
+      {m.error && (
+        <div className="px-4 pb-3">
+          <Notice tone="bad">{m.error.message}</Notice>
+        </div>
+      )}
+      {d && (
+        <div className="border-t border-rule px-4 py-3" data-testid="ai-filter-result">
+          <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]">
+            <Badge tone={d.source === 'llm' ? 'good' : 'neutral'}>Filters from {d.source === 'llm' ? 'the language model' : 'rules'}</Badge>
+            {d.sectors.map((s: string) => (
+              <Badge key={s} tone="accent">
+                {s}
+              </Badge>
+            ))}
+            {d.added_filters.map((f: string) => (
+              <Badge key={f}>{f}</Badge>
+            ))}
+            <span className="text-ink-2">
+              {d.members.length} of {d.universe_count} instruments, metrics as of {fmtDate(d.metrics_as_of)}
+            </span>
+          </div>
+          {d.explanation && <p className="mt-2 text-[13px] text-ink-2">{d.explanation}</p>}
+          {d.llm_reason_not_used && <p className="mt-1 text-[12px] text-ink-3">The language model was not used: {d.llm_reason_not_used}</p>}
+          {d.notes.map((n: string) => (
+            <p key={n} className="mt-1 text-[12.5px] text-warn">
+              {n}
+            </p>
+          ))}
+          {d.members.length === 0 ? (
+            <p className="mt-3 text-[13px]">
+              No instrument passes these conditions. Most common reasons:{' '}
+              {d.top_exclusion_reasons
+                .slice(0, 3)
+                .map(([r, n]: [string, number]) => `${r} (${n})`)
+                .join('; ') || 'none recorded'}
+              .
+            </p>
+          ) : (
+            <div className="scroll-x mt-3 rounded-[9px] border border-rule">
+              <table className="text-[13px]">
+                <thead>
+                  <tr>
+                    <th className="r">#</th>
+                    <th>Instrument</th>
+                    <th className="r">Score</th>
+                    {keys.map((k) => (
+                      <th key={k} className="r">
+                        {labels[k]?.label ?? k}
+                      </th>
+                    ))}
+                    <th>Risk</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.members.map((c: any) => (
+                    <tr key={c.instrument_id}>
+                      <td className="r num">{c.rank}</td>
+                      <td>
+                        <Link to={instrumentPath(c.symbol)} className="font-semibold">
+                          {c.symbol}
+                        </Link>
+                        <div className="text-xs text-ink-2">{c.sector}</div>
+                      </td>
+                      <td className="r num">{c.score == null ? <Missing /> : fmtNum(c.score, 0)}</td>
+                      {keys.map((k) => (
+                        <td key={k} className="r num">
+                          {c.values[k] == null ? <Missing /> : fmtMetric(k, c.values[k], labels[k]?.unit)}
+                        </td>
+                      ))}
+                      <td>{c.risk_label ? <RiskBadge label={c.risk_label} /> : <Missing />}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
+  )
+}
+
 export function Themes() {
   const [category, setCategory] = useState('')
   const [q, setQ] = useState('')
@@ -114,6 +268,7 @@ export function Themes() {
             Create custom theme
           </Button>
         }
+        refresh={<RefreshButton keys={[['themes']]} hint="Reload theme memberships" />}
       />
       <Async q={list} rows={10}>
         {(d) => {
@@ -169,6 +324,11 @@ export function Themes() {
                               ) : (
                                 <p className="m-0 text-[13px] text-ink-2">Unavailable: needs {t.requires.filter((r: string) => !['prices', 'fundamentals', 'sector_rotation', 'corporate_actions'].includes(r)).join(', ').replace(/_/g, ' ')}, which no configured source provides.</p>
                               )}
+                              {t.available && (
+                                <div className="mt-3">
+                                  <ThemeRefresh themeId={t.id} compact />
+                                </div>
+                              )}
                             </li>
                           ))}
                         </ul>
@@ -190,28 +350,11 @@ export function ThemeDetail() {
   const qc = useQueryClient()
   const [snapId, setSnapId] = useState<number | undefined>()
   const [tab, setTab] = useState('members')
-  const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ tone: 'good' | 'bad'; text: string } | null>(null)
   const [confirmArchive, setConfirmArchive] = useState(false)
   const q = useApi<any>(['theme', id], `/themes/${id}`, { snapshot_id: snapId })
   const hist = useApi<any>(['theme-snapshots', id], `/themes/${id}/snapshots`)
   const nav = useNavigate()
-  const refresh = async () => {
-    setBusy(true)
-    setMsg(null)
-    try {
-      const { job_id } = await post(`/themes/${id}/refresh`)
-      const j = await waitForJob(job_id)
-      setMsg(j.status === 'succeeded' ? { tone: 'good', text: `Refreshed: snapshot ${j.detail.period} revision ${j.detail.revision} with ${j.detail.constituents} members. Earlier snapshots are unchanged.` } : { tone: 'bad', text: `Refresh ${j.status}: ${j.error ?? 'unknown error'}. The previous snapshot is still shown.` })
-      setSnapId(undefined)
-      qc.invalidateQueries({ queryKey: ['theme', id] })
-      qc.invalidateQueries({ queryKey: ['theme-snapshots', id] })
-    } catch (e) {
-      setMsg({ tone: 'bad', text: e instanceof ApiError ? e.message : 'Refresh failed.' })
-    } finally {
-      setBusy(false)
-    }
-  }
   const archive = async () => {
     await api(`/themes/${id}`, { method: 'PATCH', body: JSON.stringify({ archived: true, confirmed: true }) })
     qc.invalidateQueries({ queryKey: ['themes'] })
@@ -235,9 +378,13 @@ export function ThemeDetail() {
               actions={
                 <>
                   {t.available && (
-                    <Button onClick={refresh} busy={busy}>
-                      Refresh now
-                    </Button>
+                    <ThemeRefresh
+                      themeId={id as string}
+                      onDone={(j) => {
+                        setSnapId(undefined)
+                        setMsg({ tone: 'good', text: `Fetched the latest data and re-ranked: snapshot ${j.detail.period} revision ${j.detail.revision} with ${j.detail.constituents} members. Earlier snapshots are unchanged.` })
+                      }}
+                    />
                   )}
                   {!t.is_builtin && (
                     <Button variant="danger" onClick={() => setConfirmArchive(true)}>
@@ -252,6 +399,7 @@ export function ThemeDetail() {
                 <Notice tone={msg.tone}>{msg.text}</Notice>
               </div>
             )}
+            {t.available && <AiFilter themeId={id as string} labels={labels} />}
             {!s ? (
               <Panel>
                 <EmptyState title={t.available ? 'No snapshot yet' : 'This theme cannot be calculated yet'}>{d.data_state_reason}</EmptyState>

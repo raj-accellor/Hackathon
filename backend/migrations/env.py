@@ -24,7 +24,7 @@ from app.core.config import get_settings
 from app.db.models import Base
 
 target_metadata = Base.metadata
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option("sqlalchemy.url", get_settings().require_database_url())
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

@@ -90,7 +90,7 @@ CLOUD_DIAGRAM = """<div class="diagram">
 </div>
 <div class="diagram second">
 <div class="box side">migration job<br><small>alembic upgrade head, before each version</small></div>
-<div class="box side">secret store<br><small>DATABASE_URL · API_AUTH_TOKEN · HF_TOKEN</small></div>
+<div class="box side">secret store<br><small>DATABASE_URL · API_AUTH_TOKEN · LLM_API_KEY</small></div>
 <div class="box side">container registry<br><small>markets-api · markets-web (linux/amd64)</small></div>
 </div>"""
 
@@ -305,7 +305,7 @@ SLIDES: list[tuple[str, str, str, str]] = [
     ("Part 2 · Deploy", "Step 3: secrets and settings",
      table([("<code>DATABASE_URL</code>", "the psycopg URL from step 2", "secret"),
             ("<code>API_AUTH_TOKEN</code>", "<code>openssl rand -hex 32</code>", "secret"),
-            ("<code>HF_TOKEN</code>", "only if you use the model", "secret"),
+            ("<code>LLM_API_KEY</code>", "only if you use the model", "secret"),
             ("<code>APP_ENV</code> / <code>DATA_MODE</code>", "<code>production</code> / <code>live</code>", ""),
             ("<code>AUTO_CREATE_SCHEMA</code>", "<code>false</code> — the migration job owns the schema", ""),
             ("<code>SCHEDULER_ENABLED</code>", "<code>true</code> with one replica", ""),

@@ -58,6 +58,7 @@ class CorrelatedMarketData:
         self.quote_ttl = quote_ttl
         self.precedence = precedence
         self._coalesce = Coalescer()
+        self._pending: set[asyncio.Future[Any]] = set()
 
     def _brokers(self) -> list[Any]:
         return [self.kite] if self.kite is not None else []
@@ -150,6 +151,19 @@ class CorrelatedMarketData:
         if out["status"] != "unavailable":
             await self.cache.set(key, out, self.quote_ttl)  # errors are never cached
         return {**out, "cache": "miss"}
+
+    async def quote_within(self, symbol: str, instrument_type: str = "EQ", deadline: float = 8.0) -> dict[str, Any]:
+        """The quote, or a `pending` state when no source has answered within `deadline` seconds. The
+        fetch keeps running in the background, so a later call is served from the cache."""
+        task = asyncio.ensure_future(self.quote(symbol, instrument_type))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), deadline)
+        except TimeoutError:
+            self._pending.add(task)
+            task.add_done_callback(self._pending.discard)
+            return {"symbol": symbol.upper(), "status": "pending", "fields": {}, "conflicts": [], "sources": [], "is_demo": False,
+                    "currency": "INR", "cache": "miss",
+                    "reason": f"No quote source answered within {deadline:g}s; still checking in the background."}
 
     async def _quote(self, symbol: str, instrument_type: str) -> dict[str, Any]:
         sym = symbol.upper()

@@ -1,9 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, post, useAction, useApi } from '../api/client'
+import { api, post, useAction, useApi, waitForJob } from '../api/client'
 import { InstrumentSearch } from '../components/InstrumentSearch'
-import { Async, Badge, Button, EmptyState, ErrorState, Missing, Notice, PageHeader, Panel, StateBadge } from '../components/ui'
+import { Async, Badge, Button, EmptyState, ErrorState, Missing, Notice, PageHeader, Panel, RefreshButton, StateBadge } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtNum } from '../lib/format'
 
 const VERDICT: Record<string, { label: string; tone: string; mark: string }> = {
@@ -50,7 +50,7 @@ function Analysis({ d }: { d: any }) {
   return (
     <div className="space-y-4">
       <Panel
-        title={`${d.previous.label} commitments checked against ${d.current.label}`}
+        title={`${d.previous.label} commitments checked against ${d.current.label}${d.comparison && !d.comparison.consecutive ? ' (not consecutive)' : ''}`}
         aside={
           <>
             <Badge tone={d.mode === 'llm' ? 'accent' : 'neutral'}>{d.mode === 'llm' ? `Classified by ${d.llm.model_id}` : 'Keyword heuristic, no language model'}</Badge>
@@ -58,6 +58,13 @@ function Analysis({ d }: { d: any }) {
           </>
         }
       >
+        {d.comparison?.warning && (
+          <div className="px-4 pt-3" data-testid="concall-quarter-warning">
+            <Notice tone="warn" title={`Compared with ${d.previous.label} because ${d.comparison.requested_previous} is missing.`}>
+              {d.comparison.warning}
+            </Notice>
+          </div>
+        )}
         <div className="grid gap-4 px-4 py-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
           <ScoreDial score={sc} />
           <div className="text-[13px] text-ink-2">
@@ -86,7 +93,13 @@ function Analysis({ d }: { d: any }) {
             </Notice>
           </div>
         )}
-        {d.limitations.map((l: string) => (
+        {d.web?.available && (
+          <p className="m-0 px-4 pb-3 text-[13px] text-ink-2">
+            Web check: {d.web.queries} searches through {d.web.provider}, {d.web.results} sources retrieved
+            {d.web.retrieved_at && <> on {fmtDateTime(d.web.retrieved_at)}</>}.
+          </p>
+        )}
+        {d.limitations.filter((l: string) => l !== d.comparison?.warning).map((l: string) => (
           <div key={l} className="px-4 pb-3">
             <Notice tone="warn">{l}</Notice>
           </div>
@@ -115,11 +128,24 @@ function Analysis({ d }: { d: any }) {
                       <Badge tone={v.tone}>
                         <span aria-hidden>{v.mark}</span> {v.label}
                       </Badge>
-                      <span>Evidence from {d.current.label}</span>
+                      <span>{a.evidence_source === 'web' ? 'Evidence from the web' : `Evidence from ${d.current.label}`}</span>
                       {!a.grounded && <Badge tone="bad">Excluded from score</Badge>}
                     </div>
                     {a.evidence_quote ? (
                       <blockquote className="m-0 border-l-2 border-rule-strong pl-3">“{a.evidence_quote}”</blockquote>
+                    ) : a.evidence_source === 'web' && a.web_sources?.length > 0 ? (
+                      <ul className="m-0 list-none space-y-1 p-0" data-testid="concall-web-evidence">
+                        {a.web_sources.map((w: any) => (
+                          <li key={w.id} className="border-l-2 border-accent pl-3">
+                            <a href={w.url} target="_blank" rel="noopener noreferrer nofollow">
+                              {w.title}
+                            </a>
+                            <span className="ml-1 text-xs text-ink-2">
+                              web · {w.published_at ? fmtDate(w.published_at) : 'undated'}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     ) : (
                       <p className="m-0 text-ink-2">{a.verdict === 'not_addressed' ? 'The current call does not mention this.' : (a.grounding_note ?? 'No supporting quote.')}</p>
                     )}
@@ -218,11 +244,42 @@ function Upload({ refId, onDone }: { refId: string; onDone: () => void }) {
   )
 }
 
+function useAutoAnalysis(refStr: string) {
+  const refId = encodeURIComponent(refStr)
+  const qc = useQueryClient()
+  const [state, setState] = useState<{ busy: boolean; step: string; error: string | null; result: any }>({ busy: false, step: '', error: null, result: null })
+  const start = async () => {
+    setState({ busy: true, step: 'Fetching con-call transcripts filed with NSE…', error: null, result: null })
+    try {
+      const { job_id } = await post(`/instruments/${refId}/concalls/auto`, {})
+      const j = await waitForJob(job_id, () => setState((s) => ({ ...s, step: 'Reading the calls, checking each promise on the web and scoring…' })))
+      if (j.status !== 'succeeded') throw new Error(j.error ?? `The analysis ${j.status}.`)
+      setState({ busy: false, step: '', error: null, result: j.detail })
+    } catch (e: any) {
+      setState({ busy: false, step: '', error: e?.message ?? 'The analysis failed.', result: null })
+    } finally {
+      qc.invalidateQueries({ queryKey: ['concalls', refStr] })
+      qc.invalidateQueries({ queryKey: ['concall-overview'] })
+    }
+  }
+  return { ...state, start }
+}
+
 function ForInstrument({ refStr }: { refStr: string }) {
   const refId = encodeURIComponent(refStr)
   const qc = useQueryClient()
   const q = useApi<any>(['concalls', refStr], `/instruments/${refId}/concalls`)
+  const auto = useAutoAnalysis(refStr)
   const run = useAction<void, any>(() => post(`/instruments/${refId}/concalls/analyze`, {}), [['concalls', refStr], ['concall-overview']])
+  const started = useRef(false)
+  // Asking about a company is enough: with no analysis on file, fetch its calls from NSE and score them.
+  useEffect(() => {
+    if (!started.current && q.data && !q.data.latest && q.data.nse_filings?.available && !auto.busy) {
+      started.current = true
+      auto.start()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q.data])
   return (
     <Async q={q} rows={10}>
       {(d) => (
@@ -236,57 +293,89 @@ function ForInstrument({ refStr }: { refStr: string }) {
                 {d.instrument.symbol} <span className="font-normal text-ink-2">{d.instrument.name}</span>
               </h1>
             </div>
-            <Button variant="primary" onClick={() => run.mutate()} busy={run.isPending} disabled={d.transcripts.length < 2}>
-              {d.latest ? 'Run analysis again' : 'Run analysis'}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <RefreshButton keys={[['concalls', refStr]]} />
+              {d.transcripts.length >= 2 && (
+                <Button onClick={() => run.mutate()} busy={run.isPending} disabled={auto.busy} title="Score the transcripts already stored, without fetching from NSE">
+                  Score stored calls
+                </Button>
+              )}
+              <Button variant="primary" onClick={auto.start} busy={auto.busy} disabled={!d.nse_filings?.available} data-testid="concall-auto"
+                title={d.nse_filings?.available ? 'Fetch the latest transcripts from NSE, check promises on the web, and score' : d.nse_filings?.reason}>
+                {d.latest ? 'Fetch latest from NSE and re-score' : 'Fetch from NSE and analyse'}
+              </Button>
+            </div>
           </div>
+          {auto.busy && (
+            <div role="status" data-testid="concall-progress">
+              <Notice tone="info" title="Working on it.">
+                {auto.step}
+              </Notice>
+            </div>
+          )}
           {run.error && <ErrorState error={run.error} />}
-          {d.transcripts.length < 2 && (
-            <Notice tone="info" title="Two consecutive quarters are needed.">
-              Upload the previous quarter's call and the current quarter's call. {d.transcripts.length} uploaded so far.
+          {auto.error && (
+            <Notice tone="bad" title="The analysis could not be completed.">
+              {auto.error}
             </Notice>
           )}
-          {d.latest ? <Analysis d={d.latest} /> : d.transcripts.length >= 2 && <Panel><EmptyState title="Transcripts are ready">Run the analysis to score follow-through.</EmptyState></Panel>}
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Transcripts on file">
-              {d.transcripts.length === 0 ? (
-                <EmptyState title="No transcripts uploaded">{d.data_state_reason}</EmptyState>
-              ) : (
-                <table className="text-[13px]">
-                  <thead>
-                    <tr>
-                      <th>Quarter</th>
-                      <th>Source</th>
-                      <th className="r">Length</th>
-                      <th>Uploaded</th>
+          {auto.result && (
+            <Notice tone="good" title={`Scored ${auto.result.previous} → ${auto.result.current}.`}>
+              {(() => {
+                const n = auto.result.fetched.stored.filter((t: any) => t.fetched).length
+                return n > 0
+                  ? `${n} new transcript${n === 1 ? '' : 's'} fetched from NSE (${auto.result.fetched.found} found).`
+                  : `All ${auto.result.fetched.found} transcripts filed with NSE were already stored.`
+              })()}
+              {auto.result.fetched.skipped.length > 0 && ` Skipped: ${auto.result.fetched.skipped.map((x: any) => `${x.label} (${x.reason})`).join('; ')}.`}
+              {auto.result.warning && <span className="mt-1 block font-medium text-warn">Warning: {auto.result.warning}</span>}
+            </Notice>
+          )}
+          {!d.nse_filings?.available && (
+            <Notice tone="warn" title="NSE filings are not configured.">
+              {d.nse_filings?.reason}. Set NSE_FILINGS_BASE_URL in .env to fetch transcripts automatically, or add them below.
+            </Notice>
+          )}
+          {d.latest ? <Analysis d={d.latest} /> : !auto.busy && d.transcripts.length >= 2 && <Panel><EmptyState title="Transcripts are ready">Use “Fetch from NSE and analyse” to score follow-through.</EmptyState></Panel>}
+          <Panel title="Transcripts on file">
+            {d.transcripts.length === 0 ? (
+              <EmptyState title="No transcripts yet">{auto.busy ? 'Fetching from NSE…' : d.data_state_reason}</EmptyState>
+            ) : (
+              <table className="text-[13px]">
+                <thead>
+                  <tr>
+                    <th>Quarter</th>
+                    <th>Source</th>
+                    <th className="r">Length</th>
+                    <th>Filed or added</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.transcripts.map((t: any) => (
+                    <tr key={t.id}>
+                      <td className="font-medium">{t.label}</td>
+                      <td>
+                        {t.source_url ? (
+                          <a href={t.source_url} target="_blank" rel="noopener noreferrer nofollow">
+                            {t.source}
+                          </a>
+                        ) : (
+                          t.source
+                        )}
+                        {t.is_demo && <div className="text-xs text-ink-2">Synthetic demo transcript</div>}
+                      </td>
+                      <td className="r num">{fmtNum(t.chars, 0)}</td>
+                      <td>{fmtDate(t.call_date ?? t.uploaded_at)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {d.transcripts.map((t: any) => (
-                      <tr key={t.id}>
-                        <td className="font-medium">{t.label}</td>
-                        <td>
-                          {t.source_url ? (
-                            <a href={t.source_url} target="_blank" rel="noopener noreferrer nofollow">
-                              {t.source}
-                            </a>
-                          ) : (
-                            t.source
-                          )}
-                          {t.is_demo && <div className="text-xs text-ink-2">Synthetic demo transcript</div>}
-                        </td>
-                        <td className="r num">{fmtNum(t.chars, 0)}</td>
-                        <td>{fmtDate(t.uploaded_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </Panel>
-            <Panel title="Add a transcript">
-              <Upload refId={refId} onDone={() => qc.invalidateQueries({ queryKey: ['concalls', refStr] })} />
-            </Panel>
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Panel>
+          <details className="rounded-[10px] border border-rule bg-surface">
+            <summary className="cursor-pointer px-4 py-3 font-medium">Add a call that NSE does not have</summary>
+            <Upload refId={refId} onDone={() => qc.invalidateQueries({ queryKey: ['concalls', refStr] })} />
+          </details>
         </div>
       )}
     </Async>
@@ -302,10 +391,11 @@ export function Concalls() {
     <>
       <PageHeader
         title="Concall follow-through"
-        lede="Did management do this quarter what it said last quarter? Commitments from the previous earnings call are checked against the current one and scored."
+        lede="Did management do this quarter what it said last quarter? Calls are fetched from NSE filings, promises from the previous call are checked against the current call and the web, and scored."
+        refresh={<RefreshButton keys={[['concall-overview'], ['concalls']]} />}
       />
       <div className="mb-4 max-w-md">
-        <InstrumentSearch equitiesOnly placeholder="Choose a company to upload calls or run the analysis" onPick={(i) => nav(`/concalls/${i.exchange}:${encodeURIComponent(i.symbol)}`)} />
+        <InstrumentSearch equitiesOnly placeholder="Choose a company: its calls are fetched from NSE and scored" onPick={(i) => nav(`/concalls/${i.exchange}:${encodeURIComponent(i.symbol)}`)} />
       </div>
       <Async q={q} rows={6}>
         {(d) => (
@@ -317,7 +407,7 @@ export function Concalls() {
             )}
             <Panel title="Latest analysis per company">
               {d.items.length === 0 ? (
-                <EmptyState title="No analyses yet">Pick a company above, upload two consecutive quarters of call transcripts, and run the analysis.</EmptyState>
+                <EmptyState title="No analyses yet">Pick a company above. Its last con-call transcripts are fetched from NSE, each promise is checked on the web, and follow-through is scored.</EmptyState>
               ) : (
                 <div className="scroll-x">
                   <table>
@@ -359,7 +449,7 @@ export function Concalls() {
               )}
             </Panel>
             {d.pending.length > 0 && (
-              <Panel title="Transcripts uploaded, not yet analysed">
+              <Panel title="Transcripts stored, not yet analysed">
                 <ul className="m-0 list-none p-0">
                   {d.pending.map((p: any) => (
                     <li key={p.instrument_id} className="flex justify-between border-b border-rule px-4 py-2 last:border-0">

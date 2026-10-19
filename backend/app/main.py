@@ -101,7 +101,8 @@ async def seed(c: Container) -> None:
 
 async def _seed(c: Container) -> None:
     async with c.sessions() as s:
-        await pipeline.instruments_job(c, s)
+        # Start-up must not wait on NSE: the scheduled instruments job refreshes industry labels.
+        await pipeline.instruments_job(c, s, refresh_labels=False)
         if c.settings.is_demo:
             from app.devtools import demo_concalls as dc
             from app.services import concall
@@ -135,6 +136,9 @@ def create_app(settings: Settings | None = None, container: Container | None = N
                 await jobs.start_background(c, "full_refresh", "full_refresh", pipeline.full_refresh, "initial")
             if c.llm.available:
                 app.state.llm_check = asyncio.create_task(c.llm.check_availability())
+            if c.kite.client is not None and not settings.is_demo:
+                # Ask Kite for the session state now, so the login link is ready when the app first asks for it.
+                app.state.broker_check = asyncio.create_task(c.kite.auth_state())
         log.info("startup", data_mode=settings.data_mode, app_env=settings.app_env, scheduler=settings.scheduler_enabled)
         try:
             yield
@@ -177,7 +181,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         response.headers["X-Request-ID"] = rid
         for k, v in SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
-        if path not in ("/health/live", "/metrics"):
+        if path not in ("/health/live", "/health", "/api/v1/health", "/metrics"):
             log.info("request", method=request.method, path=path, status=response.status_code, ms=round(dur * 1000, 1), request_id=rid)
         return response
 
@@ -196,9 +200,19 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         log.error("unhandled_error", error=f"{type(exc).__name__}: {exc}"[:500], path=request.url.path)
         return error(500, "internal_error", "An unexpected error occurred. Quote the request id when reporting it.", request)
 
+    @app.get("/", include_in_schema=False)
+    async def root() -> dict[str, str]:
+        # This port serves only the API; a browser opened here should be told where the app is, not shown a 404.
+        return {"service": "api", "message": "This is the API. Open the web app instead.",
+                "web_app": "http://127.0.0.1:5173 (local dev) or the frontend service port (Docker)", "docs": "/docs"}
+
     @app.get("/health/live", tags=["health"])
     async def live() -> dict[str, str]:
         return {"status": "ok"}
+
+    # Aliases for the paths monitors, load balancers and people try first; same answer as /health/live.
+    app.add_api_route("/health", live, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/api/v1/health", live, methods=["GET"], include_in_schema=False)
 
     @app.get("/health/ready", tags=["health"])
     async def ready(request: Request) -> JSONResponse:

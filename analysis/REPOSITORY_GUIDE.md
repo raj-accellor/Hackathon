@@ -129,7 +129,7 @@ equal-weight composite of their constituents. Web app: **Sector rotation**. Code
 
 For one instrument: current reconciled quote, metrics and scores, and recent news and filings from
 web search (`ddgs` by default), assembled into an evidence bundle. With a language model configured
-(GLM through Hugging Face), the model writes pros, cons, catalysts, risks, valuation, technical and
+(GLM through the OpenAI-compatible provider configured in `.env`), the model writes pros, cons, catalysts, risks, valuation, technical and
 sector context, news and invalidation conditions, citing evidence ids. Every statement is checked:
 it must cite retrieved evidence, contain no unretrieved URLs, and state no numbers absent from what
 it cites, or it is removed. Without a model, a rule-based board is produced and labelled as such.
@@ -262,7 +262,7 @@ Recent changes (2026-10-15):
 | Verified | Not verified |
 |---|---|
 | NSE MCP against the real servers | Kite quotes and history against the real server (needs the account holder's login) |
-| Kite MCP discovery, allowlist, instrument lookup | Real output from the Hugging Face model (the account had no inference credits; HTTP 402) |
+| Kite MCP discovery, allowlist, instrument lookup | Real output from the language model (no `LLM_API_KEY` configured yet) |
 | Web search through `ddgs` | — |
 | PostgreSQL 16 + Redis: migration, ~280 tests, start-up script, live mode | CI on a GitHub runner (no remote configured) |
 | Docker Compose stack end to end, and `scripts/dev.sh` against it | — |

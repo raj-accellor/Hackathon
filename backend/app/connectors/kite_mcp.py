@@ -11,6 +11,8 @@ this client's MCP session. No broker password or token is handled or stored by t
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 from datetime import UTC, date, datetime
 from typing import Any
@@ -26,19 +28,25 @@ QUOTE_BATCH = 250  # the tool documents a 500-instrument ceiling; stay well unde
 _LOGIN_HINT = re.compile(r"log\s?in|logged in|session|unauthori[sz]ed|authenticat", re.I)
 _URL = re.compile(r"https?://[^\s)\]>\"']+")
 ORDER_POLICY = "blocked by policy: this product never places orders"
+LOGIN_LINK_MAX_AGE_SECONDS = 60  # Kite rejects older authorisation links as "invalid authorize session"
 
 
 class KiteMcpProvider:
     name = "kite_mcp"
 
-    def __init__(self, client: McpClient | None, is_demo: bool = False, exchange: str = "NSE") -> None:
+    def __init__(self, client: McpClient | None, is_demo: bool = False, exchange: str = "NSE", keepalive_seconds: float = 0.0) -> None:
         self.client = client
+        self.keepalive_seconds = keepalive_seconds
+        self._keepalive_task: asyncio.Task[None] | None = None
         self.is_demo = is_demo
         self.exchange = exchange
         self._instruments: dict[str, dict[str, Any]] = {}
         self._start_error: str | None = None
         self._auth: dict[str, Any] = {"state": "unknown"}
         self._pending_login_url: str | None = None  # a link has been issued and not yet approved
+        self._link_issued_at: datetime | None = None
+        self._login_error: str | None = None
+        self._resets_at_auth = 0  # the client's session-reset count when the session was last confirmed authorised
 
     async def start(self) -> None:
         if self.client is None:
@@ -48,8 +56,40 @@ class KiteMcpProvider:
             self._start_error = None
         except McpError as e:
             self._start_error = str(e)
+            return
+        if self.client.restored_session and self._auth.get("state") == "unknown":
+            # The session saved by the previous run is still open at Kite: find out at once whether the account
+            # holder's approval still applies, so the status page does not ask for a login that is not needed.
+            with contextlib.suppress(Exception):
+                await self.auth_state()
+        if self.keepalive_seconds > 0 and (self._keepalive_task is None or self._keepalive_task.done()):
+            self._keepalive_task = asyncio.create_task(self._keepalive())
+
+    async def _keepalive(self) -> None:
+        """While authorised, confirm the session every `keepalive_seconds`: an idle session stays in use, and a session
+        Kite has ended (its daily token expiry, a restart on its side) shows as "log in again" within minutes."""
+        while True:
+            await asyncio.sleep(self.keepalive_seconds)
+            if self._auth.get("state") == "authorized":
+                with contextlib.suppress(Exception):
+                    await self.auth_state()
+
+    async def disconnect(self) -> dict[str, Any]:
+        """Discard the approved session (and its saved copy). This app then holds no access to the account."""
+        if self.client is None:
+            return {"state": "not_configured"}
+        await self.client.forget_session()
+        self._pending_login_url = self._link_issued_at = None
+        self._resets_at_auth = self.client.session_resets
+        self._auth = {"state": "login_required", "checked_at": datetime.now(UTC).isoformat(),
+                      "reason": "Disconnected from Kite on request. Log in again to use broker data.", "login_url": None, "issued_at": None}
+        return self._auth
 
     async def close(self) -> None:
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._keepalive_task
         if self.client is not None:
             await self.client.close()
 
@@ -76,10 +116,23 @@ class KiteMcpProvider:
             "order_placement": capability(False, None, ORDER_POLICY),
         }
 
+    def _note_session_loss(self) -> None:
+        """Kite binds the approval to the MCP session. If Kite forgot the session (it answers "Invalid session
+        ID", e.g. after its own restart or a long idle period) the client had to open a new one, so the
+        approval is gone: say so instead of reporting a stale "authorized"."""
+        c = self.client
+        if c is not None and self._auth.get("state") == "authorized" and c.session_resets > self._resets_at_auth:
+            self._auth = {"state": "login_required", "checked_at": datetime.now(UTC).isoformat(),
+                          "reason": "Kite ended the previous session, so its approval no longer applies. Approve access again.",
+                          "session_lost_at": c.session_reset_at.isoformat() if c.session_reset_at else None}
+
     def health(self) -> dict[str, Any]:
         if self.client is None:
             return {"name": "kite_mcp", "state": "not_configured", "url": None}
-        return {**self.client.health(), "auth": self._auth}
+        self._note_session_loss()
+        session = {"kept_across_restarts": self.client.session_store is not None, "restored_from_previous_run": self.client.restored_session,
+                   "keepalive_seconds": self.keepalive_seconds or None}
+        return {**self.client.health(), "auth": self._auth, "session": session}
 
     async def _call(self, tool: str, intents: dict[str, Any]) -> Any:
         c = self.client
@@ -94,11 +147,13 @@ class KiteMcpProvider:
         except BindError as e:
             raise ProviderUnavailable(f"{tool}: {e}", "not_supported", self.name) from e
         except McpToolError as e:
-            if _LOGIN_HINT.search(str(e)) or (self._pending_login_url and tool not in ("login", "search_instruments")):
+            if _LOGIN_HINT.search(str(e)):
                 self._auth = {**self._auth, "state": "login_required"}
                 raise ProviderUnavailable("broker login required: authorise the Kite session from the Data status page",
                                           "login_required", self.name) from e
-            # Before login some data tools fail with a generic message; confirm the session state once.
+            # Before login some data tools fail with a generic message ("Failed to get quotes"). Confirm the session
+            # with get_profile rather than assuming, and never issue a new link here: rotating the link while the user
+            # is approving the previous one would make that approval fail.
             if tool in ("get_historical_data", "get_quotes", "get_ohlc", "get_ltp") and self._auth.get("state") != "authorized":
                 if (await self.auth_state()).get("state") == "login_required":
                     raise ProviderUnavailable("broker login required: authorise the Kite session from the Data status page",
@@ -108,6 +163,37 @@ class KiteMcpProvider:
             raise ProviderUnavailable(str(e), "unavailable", self.name) from e
 
     # ------------------------------------------------------------------ auth
+    async def _issue_login_link(self) -> str | None:
+        """A new authorisation link from Kite's `login` tool. Kite rejects links after a short time
+        ("invalid authorize session"), so a link is issued when the user is about to open it, never reused."""
+        self._pending_login_url = self._link_issued_at = None
+        try:
+            text = await self.client.call("login", {})  # type: ignore[union-attr]
+        except McpError as e:
+            self._login_error = f"Kite's login tool failed: {str(e)[:200]}"
+            return None
+        m = _URL.search(text if isinstance(text, str) else str(text))
+        self._pending_login_url = m.group(0) if m else None
+        self._link_issued_at = datetime.now(UTC) if m else None
+        self._login_error = None if m else "Kite's login tool returned no authorisation link"
+        return self._pending_login_url
+
+    def _link_fields(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"login_url": self._pending_login_url,
+                               "issued_at": self._link_issued_at.isoformat() if self._link_issued_at else None}
+        if self._pending_login_url is None and self._login_error:
+            out["reason"] = self._login_error
+        return out
+
+    async def login_link(self) -> dict[str, Any]:
+        """A fresh login link for the account holder to open now (or `authorized` when no login is needed)."""
+        st = await self.auth_state()
+        if st.get("state") != "login_required":
+            return st
+        await self._issue_login_link()  # only here, when the user is about to open it
+        self._auth = {**{k: v for k, v in st.items() if k != "reason"}, **self._link_fields()}
+        return self._auth
+
     async def auth_state(self) -> dict[str, Any]:
         """authorized | login_required (with login_url) | unavailable | not_configured."""
         if self.client is None:
@@ -123,21 +209,22 @@ class KiteMcpProvider:
             # The server answered but would not return the profile: the session is not authorised.
             # Kite's wording varies ("Please log in first", "Failed to execute get_profile"), so any
             # tool error here means "log in", while transport failures below mean "unavailable".
-            if not self._pending_login_url:
-                try:
-                    text = await self.client.call("login", {})
-                    m = _URL.search(text if isinstance(text, str) else str(text))
-                    self._pending_login_url = m.group(0) if m else None
-                except McpError:
-                    pass
-            self._auth = {"state": "login_required", "login_url": self._pending_login_url, "checked_at": now, "note": note}
+            self._note_session_loss()
+            # No link is issued here: links are issued only when the user asks to open one (login_link), so a
+            # background check can never replace the link the user is approving.
+            age = (datetime.now(UTC) - self._link_issued_at).total_seconds() if self._link_issued_at else None
+            if age is not None and age > LOGIN_LINK_MAX_AGE_SECONDS * 10:
+                self._pending_login_url = self._link_issued_at = None  # long expired; the page requests a fresh one
+            lost = {k: v for k, v in self._auth.items() if k in ("reason", "session_lost_at")} if self._auth.get("session_lost_at") else {}
+            self._auth = {"state": "login_required", "checked_at": now, "note": note, **lost, **self._link_fields()}
             return self._auth
         except McpError as e:
             self._auth = {"state": "unavailable", "reason": str(e)[:300], "checked_at": now}
             return self._auth
         who = profile.get("user_id") if isinstance(profile, dict) else None
         self._auth = {"state": "authorized", "user_id": who, "checked_at": now}
-        self._pending_login_url = None
+        self._resets_at_auth = self.client.session_resets
+        self._pending_login_url = self._link_issued_at = None
         return self._auth
 
     # ------------------------------------------------------------------ data

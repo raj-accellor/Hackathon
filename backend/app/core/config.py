@@ -23,10 +23,11 @@ class Settings(BaseSettings):
     data_mode: Literal["demo", "live"] = "demo"
     log_level: str = "INFO"
     # PostgreSQL through psycopg 3. Any postgres:// / postgresql:// / +asyncpg URL is rewritten to this driver.
-    database_url: str = "postgresql+psycopg://markets:change-me-locally@localhost:5432/markets"
+    # No built-in default: set DATABASE_URL in .env (see .env.example).
+    database_url: str | None = None
     redis_url: str | None = None
     api_auth_token: SecretStr | None = None
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    cors_origins: str = ""  # comma-separated; empty = same-origin only (the web app proxies /api)
     default_market_timezone: str = "Asia/Kolkata"
     scheduler_enabled: bool = True
     # The schema comes from Alembic (`alembic upgrade head`, run by scripts/dev.sh and the Compose
@@ -44,21 +45,51 @@ class Settings(BaseSettings):
     mcp_max_retries: int = 2
     nse_mcp_min_interval_seconds: float = 0.2
     broker_mcp_min_interval_seconds: float = 0.35
+    # Kite binds the account holder's approval to the MCP session. Keeping the session id on disk (server side only,
+    # owner-only permissions, never logged or sent to the browser) lets an approval survive API restarts. Set
+    # KITE_PERSIST_SESSION=false to forget it on every restart. Live mode only.
+    kite_persist_session: bool = True
+    kite_session_file: Path = BACKEND_DIR / "var" / "kite_mcp_session.json"
+    # While authorised, confirm the session this often (get_profile), so an idle session stays in use and a session
+    # Kite has ended is noticed within minutes. 0 disables.
+    kite_keepalive_seconds: float = 300.0
     breaker_failure_threshold: int = 5
     breaker_reset_seconds: float = 60.0
 
     # --- Fundamentals (no MCP source supplies statements)
     fundamentals_dir: Path = BACKEND_DIR / "var" / "fundamentals"
+    # NSE corporate filings (financial results XBRL, con-call transcripts). Unset = disabled.
+    nse_filings_base_url: str | None = None  # e.g. https://www.nseindia.com/api
+    nse_filings_document_hosts: str = "nsearchives.nseindia.com"  # comma-separated hosts documents may be fetched from
+    nse_filings_user_agent: str = "Mozilla/5.0 (compatible; MarketsIntelligence/1.0; research)"
+    nse_filings_min_interval_seconds: float = 1.0
+    nse_filings_timeout_seconds: float = 30.0
+    nse_filings_cache_dir: Path = BACKEND_DIR / "var" / "nse_filings"
+    nse_filings_max_companies_per_run: int = 400  # statements are fetched for this many companies per refresh, missing first
+    # Whole-market universe and prices from NSE's published files (see analysis/HOW_TO_RUN.md). Unset = disabled.
+    universe_scope: Literal["reference", "all"] = "reference"  # all = every NSE-listed equity in UNIVERSE_SERIES
+    universe_series: str = "EQ,BE"
+    nse_equity_list_url: str | None = None  # e.g. https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv
+    nse_industry_list_url: str | None = None  # e.g. .../content/indices/ind_niftytotalmarket_list.csv
+    nse_bhavcopy_url_template: str | None = None  # e.g. .../content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip
 
-    # --- LLM through Hugging Face
+    # --- LLM: any OpenAI-compatible chat-completions provider (OpenRouter, OpenAI, Together, Groq,
+    # a vLLM/Ollama server, ...). Everything provider-specific is configuration; nothing is built in.
     llm_enabled: bool = False
-    hf_token: SecretStr | None = None
-    hf_model_id: str | None = None
-    hf_endpoint_url: str | None = None
-    hf_router_url: str = "https://router.huggingface.co/v1"
+    llm_provider_name: str = "LLM"  # display label only, e.g. "OpenRouter"
+    llm_base_url: str | None = None  # e.g. https://openrouter.ai/api/v1 (with or without /chat/completions)
+    llm_api_key: SecretStr | None = None
+    llm_model_id: str | None = None  # exact id as the provider lists it
+    # JSON objects: extra HTTP headers and extra request-body fields sent with every call, e.g.
+    # LLM_EXTRA_HEADERS={"HTTP-Referer": "https://example.com", "X-Title": "Markets Intelligence"}
+    # LLM_EXTRA_BODY={"usage": {"include": true}}
+    llm_extra_headers: dict[str, str] | None = None
+    llm_extra_body: dict[str, Any] | None = None
+    llm_verify_model_list: bool = True  # check LLM_MODEL_ID against GET {LLM_BASE_URL}/models before a paid call
+    llm_response_format: Literal["json_schema", "json_object", "none"] = "json_schema"
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 1
-    llm_max_output_tokens: int = 2000
+    llm_max_output_tokens: int = 4000  # reasoning models count thinking tokens against this
     llm_temperature: float = 0.1
     llm_daily_budget: int = 200  # research calls per UTC day
     llm_daily_token_budget: int = 2_000_000
@@ -68,6 +99,7 @@ class Settings(BaseSettings):
     # An unsupported value does not stop start-up; web research is then reported as unavailable.
     web_search_provider: str = "ddgs"
     web_search_api_key: SecretStr | None = None
+    web_search_base_url: str | None = None  # endpoint for HTTP search providers, e.g. https://api.search.brave.com/res/v1/news/search
     web_search_max_results: int = 8
     web_search_timeout_seconds: float = 15.0
 
@@ -83,6 +115,9 @@ class Settings(BaseSettings):
     benchmark_symbol: str = "NIFTY 50"
     history_years: int = 3
     ingest_max_concurrency: int = 4
+    # Live mode: symbols that failed because a source was unavailable are retried once, one at a time,
+    # after this many seconds (enough for an open circuit breaker to half-open). 0 disables the retry.
+    ingest_retry_delay_seconds: float = 65.0
 
     # --- Cache TTL (seconds) and rate limits
     cache_ttl_quote: int = 60
@@ -121,14 +156,22 @@ class Settings(BaseSettings):
 
     @field_validator("database_url")
     @classmethod
-    def _psycopg_driver(cls, v: str) -> str:
+    def _psycopg_driver(cls, v: str | None) -> str | None:
         """Use psycopg 3 for PostgreSQL whatever form the URL was written in."""
+        if v is None:
+            return None
         m = re.match(r"^(postgres|postgresql)(\+[a-z0-9_]+)?://", v)
         if not m:
             return v
         v = "postgresql+psycopg://" + v[m.end():]
         # asyncpg spells TLS as ?ssl=…; libpq/psycopg uses ?sslmode=…
         return re.sub(r"([?&])ssl=", r"\1sslmode=", v)
+
+    def require_database_url(self) -> str:
+        if not self.database_url:
+            raise RuntimeError("DATABASE_URL is not set. Add it to .env, e.g. "
+                               "DATABASE_URL=postgresql+psycopg://markets:<password>@localhost:5432/markets (see .env.example).")
+        return self.database_url
 
     @property
     def is_demo(self) -> bool:

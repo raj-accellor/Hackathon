@@ -22,7 +22,7 @@ from app.core.config import get_settings
 
 def _db() -> int:
     s = get_settings()
-    url = s.database_url
+    url = s.require_database_url()
     if url.startswith("sqlite"):
         print(f"database: SQLite ({url.split('///', 1)[-1]})")
         return 0
@@ -70,11 +70,11 @@ def _show() -> int:
     from sqlalchemy.engine import make_url
 
     s = get_settings()
-    db = make_url(s.database_url)
+    db = make_url(s.require_database_url())
     local = (db.host or "localhost") in ("localhost", "127.0.0.1") and not db.query.get("host")
     r = urlsplit(s.redis_url) if s.redis_url else None
     values = {"DATA_MODE": s.data_mode, "DATABASE": db.render_as_string(hide_password=True),
-              "DATABASE_IS_LOCAL_POSTGRES": "yes" if s.database_url.startswith("postgresql") and local else "no",
+              "DATABASE_IS_LOCAL_POSTGRES": "yes" if s.require_database_url().startswith("postgresql") and local else "no",
               "REDIS_IS_LOCAL": "yes" if r and r.hostname in ("localhost", "127.0.0.1") else "no"}
     for k, v in values.items():  # shell-quoted: scripts/dev.sh evaluates this output
         print(f"{k}={shlex.quote(v)}")
@@ -92,7 +92,7 @@ def _migrate_here() -> int:
 
     from app.core.config import BACKEND_DIR
 
-    url = get_settings().database_url
+    url = get_settings().require_database_url()
 
     async def state() -> tuple[set[str], int]:
         from sqlalchemy import text

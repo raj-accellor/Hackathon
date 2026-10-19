@@ -15,6 +15,7 @@ Score (version `concall-v1`) = sum(importance weight x verdict credit) / sum(imp
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -74,8 +75,15 @@ def score(assessments: Sequence[Assessment]) -> FollowThrough:
     return FollowThrough(round(value, 1), label(value), "ok", len(valid), excluded, counts, conf, FORMULA)
 
 
+_PUNCT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u00ad": None})
+
+
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s or "").strip().lower()
+    """Case, whitespace, ligature (PDF "ﬁ" -> "fi"), curly-quote and dash differences do not count as changes;
+    a hyphen at a PDF line break keeps the hyphen ("AI-\nled" reads "AI-led")."""
+    t = unicodedata.normalize("NFKC", s or "").translate(_PUNCT)
+    t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1-\2", t)
+    return re.sub(r"\s+", " ", t).strip().lower()
 
 
 def quote_is_grounded(quote: str, text: str) -> bool:

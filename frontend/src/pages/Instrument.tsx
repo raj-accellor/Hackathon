@@ -1,14 +1,22 @@
 import { Fragment, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { useApi } from '../api/client'
+import { useApi, post } from '../api/client'
 import { PriceChart } from '../components/Charts'
 import { EntrySetup, ScoreBreakdown } from '../components/Score'
-import { Async, Badge, EmptyState, Kv, Missing, Notice, Panel, StateBadge, Tabs } from '../components/ui'
+import { Async, Badge, EmptyState, Kv, Missing, Notice, Panel, RefreshButton, StateBadge, Tabs } from '../components/ui'
 import { PROVIDER_LABEL, STATUS_LABEL, ago, fmtDate, fmtDateTime, fmtMetric, fmtNum, fmtSigned, signClass } from '../lib/format'
 import { instrumentPath } from './Overview'
 
 export function QuoteHeader({ d }: { d: any }) {
-  const f = d.quote?.fields ?? {}
+  const ref = `${d.instrument.exchange}:${d.instrument.symbol}`
+  // The page renders from stored data at once; the live quote is fetched separately and may take a few seconds.
+  const live = useApi<any>(['quote', ref], d.quote_deferred ? `/instruments/${encodeURIComponent(ref)}/quote` : null, undefined, {
+    staleTime: 30_000,
+    refetchInterval: (query) => (query.state.data?.quote?.status === 'pending' ? 4_000 : false),
+  })
+  const quote = d.quote_deferred ? live.data?.quote : d.quote
+  const quoteLoading = d.quote_deferred && (live.isLoading || quote?.status === 'pending')
+  const f = quote?.fields ?? {}
   const lp = f.last_price
   const prev = f.prev_close?.value
   const chg = lp?.value != null && prev ? (lp.value / prev - 1) * 100 : null
@@ -23,8 +31,20 @@ export function QuoteHeader({ d }: { d: any }) {
           {d.instrument.symbol} <span className="font-normal text-ink-2">{d.instrument.name}</span>
         </h1>
       </div>
-      <div className="text-right">
-        {lp?.value != null ? (
+      <div className="flex flex-col items-end gap-2 text-right">
+        <RefreshButton
+          keys={[['instrument'], ['quote'], ['instrument-metrics'], ['history'], ['financials'], ['research']]}
+          job={() => post(`/instruments/${encodeURIComponent(`${d.instrument.exchange}:${d.instrument.symbol}`)}/refresh`)}
+          label="Fetch latest"
+          hint="Fetch the latest prices for this instrument from the MCP sources and recompute its metrics"
+        />
+        <div>
+        {quoteLoading ? (
+          <div role="status" aria-live="polite" className="flex flex-col items-end gap-1.5">
+            <div className="skeleton h-8 w-40" />
+            <span className="text-xs text-ink-2">{quote?.reason ?? 'Fetching the live quote from NSE and Kite…'}</span>
+          </div>
+        ) : lp?.value != null ? (
           <>
             <div className="num font-display text-[34px] font-semibold leading-none">
               <span className="mr-1 text-lg text-ink-2">₹</span>
@@ -45,7 +65,7 @@ export function QuoteHeader({ d }: { d: any }) {
               <Missing reason="No source returned a quote" status="unavailable" /> No quote
             </div>
             <ul className="m-0 mt-1 list-none p-0 text-xs text-ink-2">
-              {(d.quote?.sources ?? []).map((s: any) => (
+              {(quote?.sources ?? []).map((s: any) => (
                 <li key={s.provider}>
                   {PROVIDER_LABEL[s.provider] ?? s.provider}: {STATUS_LABEL[s.status] ?? s.status}
                 </li>
@@ -53,6 +73,7 @@ export function QuoteHeader({ d }: { d: any }) {
             </ul>
           </div>
         )}
+        </div>
       </div>
     </div>
   )
@@ -288,7 +309,7 @@ export function Instrument() {
   const { ref = '' } = useParams()
   const refId = encodeURIComponent(ref)
   const [tab, setTab] = useState('summary')
-  const q = useApi<any>(['instrument', ref], `/instruments/${refId}`)
+  const q = useApi<any>(['instrument', ref], `/instruments/${refId}`, { quote: false })
   return (
     <Async q={q} rows={12}>
       {(d) => {

@@ -173,6 +173,17 @@ async def test_expired_session_is_reinitialised_once():
     assert [m for m, _ in seen].count("initialize") == 2
 
 
+async def test_kite_plain_text_invalid_session_is_reinitialised_once():
+    # Recorded from mcp.kite.trade on 19 Oct 2026: once the server forgets an idle session it answers
+    # HTTP 400, text/plain "Invalid session ID" (not 404, not JSON-RPC). The client must reconnect.
+    seen = []
+    responses = [lambda b: httpx.Response(400, headers={"content-type": "text/plain; charset=utf-8"}, text="Invalid session ID\n"),
+                 lambda b: _ok({"content": [{"type": "text", "text": "7"}]}, b["id"])]
+    c = client("http://mcp.test/mcp", transport=scripted(make_handler(responses, seen)), max_retries=0)
+    assert await c.call("echo", {}) == 7
+    assert [m for m, _ in seen].count("initialize") == 2
+
+
 async def test_unreachable_server_raises_unavailable_and_opens_breaker():
     def down(req):
         raise httpx.ConnectError("refused")

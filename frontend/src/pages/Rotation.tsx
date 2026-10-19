@@ -3,7 +3,7 @@ import { useMemo, useState } from 'react'
 import { ApiError, post, useApi, waitForJob } from '../api/client'
 import { RotationSchema } from '../api/schemas'
 import { RRGChart } from '../components/Charts'
-import { Async, Badge, Button, Dialog, EmptyState, Missing, Notice, PageHeader, Panel, cx } from '../components/ui'
+import { Async, Badge, Button, Dialog, EmptyState, Missing, Notice, PageHeader, Panel, RefreshButton, cx } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtNum, fmtSigned, signClass } from '../lib/format'
 
 const QUAD_NOTE: Record<string, string> = {
@@ -12,6 +12,8 @@ const QUAD_NOTE: Record<string, string> = {
   Lagging: 'Weaker than the benchmark, and still losing ground',
   Improving: 'Weaker than the benchmark, but recovering',
 }
+
+const WEEK_OPTIONS = [4, 6, 8, 12, 16, 20, 26]
 
 export function Rotation() {
   const qc = useQueryClient()
@@ -57,9 +59,10 @@ export function Rotation() {
             <Button variant="quiet" onClick={() => setHelp(true)}>
               How to read this
             </Button>
-            <Button onClick={refresh} busy={busy}>
-              Refresh now
+            <Button onClick={refresh} busy={busy} title="Recompute the rotation graph from the latest stored prices">
+              Recalculate
             </Button>
+            <RefreshButton keys={[['rotation'], ['rotation-snapshots'], ['rotation-compare']]} />
           </>
         }
       />
@@ -110,10 +113,10 @@ export function Rotation() {
               <Panel>
                 <div className="flex flex-wrap items-end gap-3 border-b border-rule px-4 py-3">
                   <label className="block text-[13px]">
-                    <span className="mb-1 block text-ink-2">Trail length</span>
+                    <span className="mb-1 block text-ink-2">Weeks computed</span>
                     <select className="field" value={trail} onChange={(e) => setTrail(e.target.value ? Number(e.target.value) : '')}>
                       <option value="">Stored (10 weeks)</option>
-                      {[4, 6, 8, 12, 16].map((n) => (
+                      {WEEK_OPTIONS.map((n) => (
                         <option key={n} value={n}>
                           {n} weeks
                         </option>
@@ -174,7 +177,13 @@ export function Rotation() {
                     )
                   })}
                 </fieldset>
-                <RRGChart sectors={d.sectors} selected={selected} onToggle={toggle} visible={visible} />
+                <RRGChart
+                  sectors={d.sectors}
+                  selected={selected}
+                  onToggle={toggle}
+                  visible={visible}
+                  onNeedMoreHistory={(trail || d.params.trail) < 26 ? () => setTrail(WEEK_OPTIONS.find((n) => n > (trail || d.params.trail)) ?? 26) : undefined}
+                />
               </Panel>
 
               <Panel title="Sector values" aside={<span>Returns are price returns on {d.price_basis}</span>}>

@@ -23,6 +23,7 @@ from app.domain.adjust import CorporateAction, parse_action
 from app.domain.provenance import DataPoint
 
 MAX_PAGES = 60
+BULK_MAX = 50  # get_bulk_quote documents at most 50 symbols per call
 
 # capability -> (server, candidate tool names in preference order)
 CAPABILITY_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -42,6 +43,10 @@ CAPABILITY_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "intraday_history": ("cm", ("get_intraday_history", "cm_get_intraday_data")),
     "fundamentals": ("bhav", ("get_financial_results", "get_fundamentals")),
 }
+
+
+class ServerRefused(ProviderUnavailable):
+    """The tool ran and answered with an error payload (as opposed to a transport failure)."""
 
 
 class NseMcpProvider:
@@ -113,7 +118,7 @@ class NseMcpProvider:
             args = bind_args(c.tools[tool].input_schema, intents)
             payload = await c.call(tool, args)
             if (err := ps.payload_error(payload)) is not None:
-                raise ProviderUnavailable(f"{tool}: {err}", "unavailable", self.name)
+                raise ServerRefused(f"{tool}: {err}", "unavailable", self.name)
             return payload, tool
         except BindError as e:
             raise ProviderUnavailable(f"{tool}: {e}", "not_supported", self.name) from e
@@ -140,7 +145,15 @@ class NseMcpProvider:
         ident = {"index_name": symbol} if is_index else {"symbol": symbol.upper()}
         chunk_months = 12 if is_index else 3  # the documented per-call maxima
         for page in range(MAX_PAGES):
-            payload, used_tool = await self._call(cap, {**ident, "end_date": cursor, "start_date": start, "months": chunk_months})
+            try:
+                payload, used_tool = await self._call(cap, {**ident, "end_date": cursor, "start_date": start, "months": chunk_months})
+            except ServerRefused as e:
+                if not frames:
+                    raise
+                # NSE keeps a limited window: pages older than it answer with an error payload
+                # ("Symbol not found", "No data for index ... between"). Keep the newer pages.
+                warnings.append(f"history starts at {frames[-1].index[0].date()}: the server has no older data ({str(e)[:160]})")
+                break
             df = ps.bars_frame(ps.find_rows(payload))
             if df.empty:
                 break
@@ -214,6 +227,26 @@ class NseMcpProvider:
             if sym:
                 out.append({"symbol": str(sym).upper(), "name": ps.pick(r, ("name", "companyname", "symbolinfo")),
                             "series": ps.pick(r, ("series",)), "provider": self.name})
+        return out
+
+    async def bulk_quotes(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        """Latest price snapshot for many symbols (get_bulk_quote, BULK_MAX per call)."""
+        out: dict[str, dict[str, Any]] = {}
+        syms = [x.upper() for x in symbols]
+        for i in range(0, len(syms), BULK_MAX):
+            payload, tool = await self._call("bulk_quote", {"symbols": syms[i: i + BULK_MAX]})
+            now = datetime.now(UTC).isoformat()
+            for r in ps.find_rows(payload):
+                sym = ps.pick(r, ("symbol", "tradingsymbol", "ticker"))
+                price = ps.to_float(ps.pick(r, ps.QUOTE_KEYS["last_price"] + ps.BAR_KEYS["close"]))
+                if not sym or price is None:
+                    continue
+                as_of = ps.parse_date(ps.pick(r, ps.BAR_KEYS["date"] + ps.QUOTE_TIME_KEYS))
+                out[str(sym).upper()] = {
+                    "last_price": price, "prev_close": ps.to_float(ps.pick(r, ps.QUOTE_KEYS["prev_close"])),
+                    "change_pct": ps.to_float(ps.pick(r, ps.QUOTE_KEYS["change_pct"])),
+                    "volume": ps.to_float(ps.pick(r, ps.QUOTE_KEYS["volume"])), "as_of": as_of.isoformat() if as_of else None,
+                    "provider": self.name, "source_id": tool, "retrieved_at": now, "is_demo": self.is_demo}
         return out
 
     async def market_breadth(self) -> dict[str, Any]:

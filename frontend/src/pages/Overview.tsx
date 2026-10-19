@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
-import { useApi } from '../api/client'
-import { Sparkline } from '../components/Charts'
-import { Async, EmptyState, Missing, PageHeader, Panel, StateBadge } from '../components/ui'
+import { api, useApi } from '../api/client'
+import { AskPanel } from '../components/AskPanel'
+import { Async, EmptyState, Missing, PageHeader, Panel, RefreshButton, StateBadge } from '../components/ui'
 import { ago, fmtDate, fmtDateTime, fmtNum, fmtSigned, signClass } from '../lib/format'
 
 export const instrumentPath = (symbol: string, exchange = 'NSE') => `/instrument/${exchange}:${encodeURIComponent(symbol)}`
@@ -34,36 +34,26 @@ export function Overview() {
   const watched = (wl.data?.items ?? []).flatMap((w: any) => w.items.map((i: any) => ({ ...i, list: w.name }))).slice(0, 6)
   return (
     <>
-      <PageHeader title="Overview" lede="Where the tracked universe stands, which sectors are rotating, and how fresh the data is." />
+      <PageHeader
+        title="Overview"
+        lede="Ask a question, then see where the tracked universe stands, which sectors are rotating and how fresh the data is."
+        refresh={<RefreshButton keys={[['overview'], ['watchlists'], ['sources']]} action={() => api('/overview', { params: { fresh: true } })} hint="Re-check the live NSE sources and reload this page" />}
+      />
       <Async q={q} rows={10}>
-        {(d) =>
-          d.data_state === 'missing' ? (
+        {(d) => (
+          <div className="space-y-5">
+            <AskPanel benchmark={d.benchmark} benchmarkSymbol={d.benchmark_symbol} />
+            {d.data_state === 'missing' ? (
             <Panel>
-              <EmptyState title="No market data yet" action={<Link to="/status">Open Data status to start a refresh</Link>}>
-                {d.data_state_reason}
+              <EmptyState title="No market data stored yet" action={<Link to="/status">Open Data status to start a refresh</Link>}>
+                {d.data_state_reason} Questions above still use the live MCP sources.
               </EmptyState>
             </Panel>
           ) : (
-            <div className="space-y-4">
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
-                <Panel title={d.benchmark ? `${d.benchmark.symbol} benchmark` : 'Benchmark'} aside={d.benchmark && <span>Last bar {fmtDate(d.benchmark.last_bar)}</span>}>
-                  {d.benchmark ? (
-                    <div className="flex flex-wrap items-end justify-between gap-4 px-4 py-4">
-                      <div>
-                        <div className="num font-display text-[38px] font-semibold leading-none">{fmtNum(d.benchmark.close)}</div>
-                        <div className="mt-2 flex gap-4 text-[13px]">
-                          <span className={signClass(d.benchmark.return_1w)}>{fmtSigned(d.benchmark.return_1w)} 1 week</span>
-                          <span className={signClass(d.benchmark.return_1m)}>{fmtSigned(d.benchmark.return_1m)} 1 month</span>
-                        </div>
-                      </div>
-                      <Sparkline values={d.benchmark.sparkline} width={300} height={72} label={`${d.benchmark.symbol} closes over the last 60 sessions`} />
-                    </div>
-                  ) : (
-                    <EmptyState title="Benchmark history is not available">The benchmark index {d.benchmark_symbol} has no price history from the configured sources. Index history comes from the broker source.</EmptyState>
-                  )}
-                </Panel>
+            <div className="space-y-5">
+              <div className="grid gap-5">
                 <Panel title="Universe" aside={<span>Metrics as of {fmtDate(d.as_of)}</span>}>
-                  <dl className="m-0 grid grid-cols-2 gap-x-6 px-4 py-3">
+                  <dl className="m-0 grid grid-cols-2 gap-x-6 px-4 py-3 md:grid-cols-3 xl:grid-cols-6">
                     {[
                       ['Instruments scored', d.universe.instruments],
                       ['Complete five-pillar scores', d.universe.complete_scores],
@@ -81,6 +71,10 @@ export function Overview() {
                       <dd className="num m-0 text-[13px]">
                         {d.market_breadth.state === 'ok' ? (
                           `${d.market_breadth.data?.advances ?? '—'} up, ${d.market_breadth.data?.declines ?? '—'} down`
+                        ) : d.market_breadth.state === 'checking' ? (
+                          <span className="text-ink-2" title={d.market_breadth.reason}>
+                            Checking…
+                          </span>
                         ) : (
                           <Missing reason={d.market_breadth.reason} status={d.market_breadth.state} />
                         )}
@@ -212,8 +206,9 @@ export function Overview() {
                 </Panel>
               </div>
             </div>
-          )
-        }
+          )}
+          </div>
+        )}
       </Async>
     </>
   )

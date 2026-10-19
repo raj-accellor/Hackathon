@@ -1,9 +1,10 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ApiError, post, useAction, useApi, waitForJob } from '../api/client'
+import { ApiError, post, useApi, waitForJob } from '../api/client'
 import { SourcesSchema } from '../api/schemas'
-import { Async, Badge, Button, Kv, Missing, Notice, PageHeader, Panel, StateBadge } from '../components/ui'
+import { Async, Badge, Button, Kv, Missing, Notice, PageHeader, Panel, RefreshButton, StateBadge } from '../components/ui'
 import { PROVIDER_LABEL, ago, fmtDate, fmtDateTime, fmtNum } from '../lib/format'
+import { KiteSessionPanel } from '../components/BrokerLogin'
 
 const CAP_LABEL: Record<string, string> = {
   history: 'Daily price history',
@@ -20,41 +21,6 @@ const CAP_LABEL: Record<string, string> = {
   fundamentals: 'Financial statements',
   instrument_master: 'Instrument master',
   order_placement: 'Order placement',
-}
-
-function BrokerLogin() {
-  const qc = useQueryClient()
-  const check = useAction<void, any>(() => post('/sources/broker/login'), [['sources']])
-  const k = check.data?.kite_mcp
-  return (
-    <div className="space-y-2 px-4 py-3">
-      <p className="m-0 text-[13px] text-ink-2">The broker source needs you to approve read-only market-data access in Kite. This app never sees your password and cannot place orders.</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => check.mutate()} busy={check.isPending}>
-          Check broker session
-        </Button>
-        {k && <StateBadge state={k.state} />}
-        {k?.user_id && <span className="text-[13px] text-ink-2">Signed in as {k.user_id}</span>}
-      </div>
-      {k?.state === 'login_required' &&
-        (k.login_url ? (
-          <Notice tone="warn" title="Login needed.">
-            <a href={k.login_url} target="_blank" rel="noopener noreferrer">
-              Open the Kite authorisation page
-            </a>
-            , approve access, then check the session again. After that, run a data refresh so the broker can fill gaps.
-          </Notice>
-        ) : (
-          <Notice tone="bad">The broker asked for a login but did not return a link. Try again in a moment.</Notice>
-        ))}
-      {k?.state === 'authorized' && <Notice tone="good">The broker session is authorised.</Notice>}
-      {k && !['login_required', 'authorized'].includes(k.state) && <Notice tone="bad">{k.reason ?? `Broker state: ${k.state}`}</Notice>}
-      {check.error && <Notice tone="bad">{check.error.message}</Notice>}
-      <Button variant="quiet" onClick={() => post('/sources/rediscover').then(() => qc.invalidateQueries({ queryKey: ['sources'] }))}>
-        Reconnect and re-read advertised tools
-      </Button>
-    </div>
-  )
 }
 
 function ApiToken() {
@@ -117,12 +83,16 @@ export function Status() {
             Refresh all data
           </Button>
         }
+        refresh={<RefreshButton keys={[['sources'], ['jobs'], ['audit']]} action={() => post('/sources/rediscover')} label="Re-check sources" hint="Reconnect to every source, re-read its advertised tools and reload this page" />}
       />
       {msg && (
         <div className="mb-3">
           <Notice tone={msg.tone}>{msg.text}</Notice>
         </div>
       )}
+      <Panel title="Zerodha Kite session" className="mb-4">
+        <KiteSessionPanel />
+      </Panel>
       <Async q={q} rows={12}>
         {(d) => {
           const caps = d.capabilities
@@ -166,6 +136,8 @@ export function Status() {
                             {c.auth?.state && c.auth.state !== 'unknown' && (
                               <div className="mt-1">
                                 <StateBadge state={c.auth.state} label={`Session: ${c.auth.state.replace(/_/g, ' ')}`} />
+                                {c.auth.checked_at && <div className="mt-0.5 text-xs text-ink-3">checked {ago(c.auth.checked_at)}</div>}
+                                {c.auth.reason && <div className="mt-0.5 max-w-[220px] text-xs text-ink-2">{c.auth.reason}</div>}
                               </div>
                             )}
                           </td>
@@ -200,9 +172,6 @@ export function Status() {
                     ))}
                     <Kv k="Recorded source disagreements">{d.coverage.source_conflicts}</Kv>
                   </dl>
-                </Panel>
-                <Panel title="Broker session">
-                  <BrokerLogin />
                 </Panel>
               </div>
 
@@ -266,7 +235,8 @@ export function Status() {
                     <Kv k="State">
                       <StateBadge state={llm?.state} />
                     </Kv>
-                    <Kv k="Model id">{llm?.model_id ?? <Missing reason="HF_MODEL_ID is not set" />}</Kv>
+                    <Kv k="Provider">{llm?.provider ?? <Missing />}</Kv>
+                    <Kv k="Model id">{llm?.model_id ?? <Missing reason={llm?.reason ?? 'The model id is not set'} />}</Kv>
                     <Kv k="Route">{llm?.base_url}</Kv>
                     <Kv k="Verified against the account">{llm?.verified ? (llm.verified.ok ? `Yes, ${ago(llm.verified.checked_at)}` : `No: ${llm.verified.reason}${llm.verified.suggestions?.length ? ` Similar ids on this route: ${llm.verified.suggestions.join(', ')}.` : ''}`) : 'Not checked'}</Kv>
                     <Kv k="Calls today (UTC)">
@@ -276,6 +246,7 @@ export function Status() {
                       {fmtNum(llm?.usage.total_tokens, 0)} of {fmtNum(llm?.usage.daily_token_budget, 0)}
                     </Kv>
                     <Kv k="Errors today">{llm?.usage.errors}</Kv>
+                    <Kv k="Cost today">{llm?.usage.cost_usd == null ? <Missing reason="Not reported by the provider yet" /> : `US$${fmtNum(llm.usage.cost_usd, 4)}`}</Kv>
                     <Kv k="Average latency">{llm?.usage.latency_ms_avg == null ? <Missing reason="No call made yet" /> : `${fmtNum(llm.usage.latency_ms_avg, 0)} ms`}</Kv>
                   </dl>
                   {llm?.reason && <p className="m-0 px-4 pb-3 text-[13px] text-ink-2">{llm.reason}. Research and concall analysis use rule-based fallbacks until it is configured.</p>}

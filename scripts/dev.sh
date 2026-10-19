@@ -75,10 +75,10 @@ if [ "$CFG_DATA_MODE" = "demo" ]; then
   sleep 2
 fi
 
-say "API on http://127.0.0.1:$API_PORT"
+say "API on http://127.0.0.1:$API_PORT (API only; open the web app below in your browser)"
 uv run uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" & pids+=($!)
 cd "$ROOT/frontend"
 [ -d node_modules ] || npm install
-say "web app on http://127.0.0.1:5173"
+say "web app on http://127.0.0.1:5173  <- open this in your browser"
 VITE_API_PROXY="http://127.0.0.1:$API_PORT" npm run dev -- --host 127.0.0.1 & pids+=($!)
 wait

@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { post, useAction, useApi } from '../api/client'
 import { InstrumentSearch } from '../components/InstrumentSearch'
 import { EntrySetup, PILLARS, PillarGlyph, ScoreFigure } from '../components/Score'
-import { Async, Badge, Button, EmptyState, ErrorState, Notice, PageHeader, Panel, RiskBadge, StateBadge } from '../components/ui'
+import { Async, Badge, Button, EmptyState, ErrorState, Notice, PageHeader, Panel, RefreshButton, RiskBadge, StateBadge } from '../components/ui'
 import { PROVIDER_LABEL, fmtDate, fmtDateTime, fmtNum } from '../lib/format'
 import { QuoteHeader } from './Instrument'
 
@@ -222,7 +222,7 @@ export function Research() {
   const nav = useNavigate()
   const qc = useQueryClient()
   const refId = ref ? encodeURIComponent(ref) : ''
-  const inst = useApi<any>(['instrument', ref], ref ? `/instruments/${refId}` : null)
+  const inst = useApi<any>(['instrument', ref], ref ? `/instruments/${refId}` : null, { quote: false })
   const latest = useApi<any>(['research', ref], ref ? `/instruments/${refId}/research` : null)
   const gen = useAction<void, any>(() => post('/research/stock', { instrument: ref }), [])
   const run = async () => {
@@ -231,7 +231,7 @@ export function Research() {
   }
   return (
     <>
-      {!ref && <PageHeader title="Research board" lede="Evidence-backed positives, negatives, risks and conditions for one instrument. Every statement links to the value or source it rests on." />}
+      {!ref && <PageHeader title="Research board" lede="Evidence-backed positives, negatives, risks and conditions for one instrument. Every statement links to the value or source it rests on." refresh={<RefreshButton keys={[['research'], ['sources']]} hint="Reload research reports and source status" />} />}
       <div className="mb-4 max-w-md">
         <InstrumentSearch equitiesOnly placeholder="Choose an instrument to research" onPick={(i) => nav(`/research/${i.exchange}:${encodeURIComponent(i.symbol)}`)} />
       </div>

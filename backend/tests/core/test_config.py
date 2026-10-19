@@ -1,4 +1,4 @@
-"""Settings: PostgreSQL through psycopg by default, and .env values that survive Docker Compose."""
+"""Settings: PostgreSQL through psycopg, and .env values that survive Docker Compose."""
 
 import os
 
@@ -7,10 +7,11 @@ import pytest
 from app.core.config import Settings
 
 
-def test_default_database_is_postgresql_through_psycopg():
+def test_no_database_endpoint_is_built_in():
     s = Settings(_env_file=None)
-    assert s.database_url.startswith("postgresql+psycopg://")
-    assert s.database_url.endswith("@localhost:5432/markets")
+    assert s.database_url is None, "DATABASE_URL comes from .env"
+    with pytest.raises(RuntimeError, match="DATABASE_URL is not set"):
+        s.require_database_url()
     assert s.auto_create_schema is False, "the schema comes from Alembic migrations"
 
 
