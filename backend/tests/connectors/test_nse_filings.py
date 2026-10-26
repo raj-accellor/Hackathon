@@ -177,3 +177,50 @@ async def test_transcripts_pick_the_results_call_of_each_quarter(tmp_path):
     assert q3 is not None and q3.filed_at.month == 1
     assert [t.filed_at for t in ts] == sorted((t.filed_at for t in ts), reverse=True)
     await p.close()
+
+
+async def test_statements_switch_to_standalone_only_when_it_has_more_annual_years(tmp_path):
+    from app.connectors.nse_filings import NseFilingsProvider
+
+    p = NseFilingsProvider("https://www.nseindia.com/api", ["nsearchives.nseindia.com"], tmp_path, user_agent="t", min_interval=0)
+    built = {"consolidated": 1, "standalone": 2}
+
+    async def filings(sym):
+        return [{"basis": b, "kind": "quarterly"} for b in ("consolidated", "standalone")]
+
+    async def build(sym, fl, basis, a, q):
+        return {"basis": basis, "annual_years": built[basis], "warnings": [], "periods": []}
+
+    p.result_filings, p._build = filings, build  # type: ignore[method-assign]
+    d = await p.statements("X")
+    assert d["basis"] == "standalone" and "consolidated filings cover 1" in d["warnings"][0]
+    built.update(consolidated=2, standalone=3)  # consolidated already comparable: kept, never mixed
+    assert (await p.statements("X"))["basis"] == "consolidated"
+    built.update(consolidated=1, standalone=1)  # a tie keeps consolidated
+    assert (await p.statements("X"))["basis"] == "consolidated"
+    await p.close()
+
+
+async def test_a_stuck_connect_is_retried_once_before_counting_as_an_outage(tmp_path):
+    from app.connectors import nse_filings as nfm
+
+    attempts = {"n": 0}
+
+    def handler(req):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise httpx.ConnectTimeout("stuck connect", request=req)
+        return httpx.Response(200, json=[{"symbol": "AAA"}])
+
+    p = nfm.NseFilingsProvider("https://www.nseindia.com/api", [], tmp_path, user_agent="t", min_interval=0,
+                               transport=httpx.MockTransport(handler))
+    rows = await nfm.market_announcements(p, nfm.date(2026, 10, 26), nfm.date(2026, 10, 26), ttl=0)
+    assert rows == [{"symbol": "AAA"}] and attempts["n"] == 2 and p.status()["errors"] == 0
+
+    always = nfm.NseFilingsProvider("https://www.nseindia.com/api", [], tmp_path / "b", user_agent="t", min_interval=0,
+                                    transport=httpx.MockTransport(lambda r: (_ for _ in ()).throw(httpx.ConnectTimeout("x", request=r))))
+    with pytest.raises(nfm.FilingsError, match="ConnectTimeout"):
+        await nfm.market_announcements(always, nfm.date(2026, 10, 26), nfm.date(2026, 10, 26), ttl=0)
+    assert always.status()["errors"] == 1
+    await p.close()
+    await always.close()

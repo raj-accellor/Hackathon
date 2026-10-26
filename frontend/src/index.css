@@ -35,6 +35,8 @@
   --rail-2: #1b2a58;
   --rail-ink: #c3cbe6;
   --rail-ink-2: #8590b5;
+  --gain-on-dark: #5fd8bf;
+  --loss-on-dark: #ff9c8a;
   --font-display: 'Bricolage Grotesque', 'IBM Plex Sans', system-ui, sans-serif;
   --font-body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
@@ -111,4 +113,6 @@ input, select, textarea, button { font: inherit; color: inherit; }
 .ticker-down { color: var(--loss); }
 .rail-grid { background-image: linear-gradient(color-mix(in srgb, var(--rail-ink) 7%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--rail-ink) 7%, transparent) 1px, transparent 1px); background-size: 28px 28px; }
 .field:hover { border-color: var(--ink-3); }
+.session-elapsed { transition: transform 900ms cubic-bezier(0.2, 0.7, 0.2, 1) 150ms; }
+.desk-actions [role='status'] { color: var(--rail-ink-2); }
 }

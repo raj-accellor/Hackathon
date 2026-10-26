@@ -10,6 +10,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 API_PORT="${API_PORT:-8000}"
+WEB_PORT="${WEB_PORT:-5173}"
 export PATH="$HOME/.docker/bin:$PATH"
 pids=()
 cleanup() { for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done; }
@@ -31,7 +32,7 @@ check_port() {  # $1 = port, $2 = what needs it, $3 = how to change it
 cd "$ROOT"
 [ -f .env ] || { cp .env.example .env; say "created .env from .env.example"; }
 check_port "$API_PORT" "the API" "run with API_PORT=8001 ./scripts/dev.sh"
-check_port 5173 "the web app" "stop the other Vite dev server"
+check_port "$WEB_PORT" "the web app" "stop the other Vite dev server, or run with WEB_PORT=5174 ./scripts/dev.sh"
 cd "$ROOT/backend"
 uv sync --quiet || fail "could not install backend dependencies (is uv installed? https://docs.astral.sh/uv/)"
 eval "$(uv run --quiet python -m app.devtools.preflight show | sed 's/^/CFG_/')"
@@ -76,9 +77,13 @@ if [ "$CFG_DATA_MODE" = "demo" ]; then
 fi
 
 say "API on http://127.0.0.1:$API_PORT (API only; open the web app below in your browser)"
-uv run uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" & pids+=($!)
+# --reload restarts the API when backend code changes, so a running dev stack never serves stale routes.
+# DEV_RELOAD=false turns it off.
+reload=()
+[ "${DEV_RELOAD:-true}" = "true" ] && reload=(--reload --reload-dir "$ROOT/backend/app")
+uv run uvicorn app.main:app --host 127.0.0.1 --port "$API_PORT" ${reload[@]+"${reload[@]}"} & pids+=($!)
 cd "$ROOT/frontend"
 [ -d node_modules ] || npm install
-say "web app on http://127.0.0.1:5173  <- open this in your browser"
-VITE_API_PROXY="http://127.0.0.1:$API_PORT" npm run dev -- --host 127.0.0.1 & pids+=($!)
+say "web app on http://127.0.0.1:$WEB_PORT  <- open this in your browser"
+VITE_API_PROXY="http://127.0.0.1:$API_PORT" npm run dev -- --host 127.0.0.1 --port "$WEB_PORT" --strictPort & pids+=($!)
 wait

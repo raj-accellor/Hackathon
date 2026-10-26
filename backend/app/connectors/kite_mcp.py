@@ -265,6 +265,20 @@ class KiteMcpProvider:
             raise ProviderUnavailable(f"get_historical_data: no rows returned for {symbol}", "unavailable", self.name)
         return BarsResult(symbol.upper(), df, self.name, "get_historical_data", datetime.now(UTC), "split_adjusted", "INR", self.is_demo)
 
+    @property
+    def authorized(self) -> bool:
+        return self.client is not None and self._auth.get("state") == "authorized"
+
+    async def quotes_raw(self, keys: list[str]) -> dict[str, dict[str, Any]]:
+        """Full Kite quotes keyed by `EXCHANGE:TRADINGSYMBOL` (any exchange, e.g. NSE, BSE, NFO), in batches.
+        Each quote carries last_price, ohlc (ohlc.close is the previous session's close), volume, oi and timestamp."""
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(keys), QUOTE_BATCH):
+            payload = await self._call("get_quotes", {"symbols": keys[i: i + QUOTE_BATCH]})
+            data = payload.get("data", payload) if isinstance(payload, dict) else {}
+            out.update({str(k).upper(): v for k, v in (data or {}).items() if isinstance(v, dict) and ":" in str(k)})
+        return out
+
     async def get_quotes(self, symbols: list[str]) -> dict[str, QuoteResult]:
         out: dict[str, QuoteResult] = {}
         syms = [s.upper() for s in symbols]

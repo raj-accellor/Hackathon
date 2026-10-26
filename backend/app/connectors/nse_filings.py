@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -308,6 +309,10 @@ class TranscriptFiling:
     quarter: int
 
 
+CONNECT_TIMEOUT_SECONDS = 8.0
+CONNECT_ATTEMPTS = 2
+
+
 class NseFilingsProvider:
     name = NAME
 
@@ -318,7 +323,9 @@ class NseFilingsProvider:
         self.document_hosts = {h.strip().lower() for h in document_hosts if h.strip()}
         self.cache_dir = Path(cache_dir)
         self.enabled = enabled
-        self._http = httpx.AsyncClient(timeout=timeout, transport=transport, follow_redirects=False,
+        # A stuck TCP connect (seen on NAT64/IPv6 networks) fails fast and is retried once; reads keep the full timeout.
+        self._http = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT_SECONDS)), transport=transport,
+                                       follow_redirects=False,
                                        headers={"User-Agent": user_agent, "Accept": "application/json, */*"})
         self._limiter = MinIntervalLimiter(min_interval)
         self.breaker_reset_seconds = 120.0
@@ -354,16 +361,14 @@ class NseFilingsProvider:
             await self._limiter.acquire()
             self._stats["calls"] += 1
             try:
-                async with self._http.stream("GET", url) as r:
-                    if r.status_code == 404:
-                        raise NotPublished(f"NSE has no file at {urlsplit(url).path}", "unavailable", NAME)
-                    if r.status_code != 200:
-                        raise FilingsError(f"NSE returned HTTP {r.status_code} for {urlsplit(url).path}", "unavailable", NAME)
-                    body = bytearray()
-                    async for chunk in r.aiter_bytes():
-                        body += chunk
-                        if len(body) > MAX_DOC_BYTES:
-                            raise FilingsError(f"document larger than {MAX_DOC_BYTES // 1_048_576} MB refused", "unavailable", NAME)
+                for attempt in range(CONNECT_ATTEMPTS):
+                    try:
+                        body = await self._stream(url)
+                        break
+                    except (httpx.ConnectError, httpx.ConnectTimeout):
+                        # nothing reached NSE, so a second connect is safe
+                        if attempt == CONNECT_ATTEMPTS - 1:
+                            raise
             except httpx.HTTPError as e:
                 self._fail(f"{type(e).__name__} fetching {urlsplit(url).path}")
                 raise FilingsError(f"NSE filings request failed: {type(e).__name__}", "unavailable", NAME) from e
@@ -377,16 +382,29 @@ class NseFilingsProvider:
         self._stats["last_success_at"] = datetime.now(UTC).isoformat()
         return bytes(body)
 
+    async def _stream(self, url: str) -> bytearray:
+        async with self._http.stream("GET", url) as r:
+            if r.status_code == 404:
+                raise NotPublished(f"NSE has no file at {urlsplit(url).path}", "unavailable", NAME)
+            if r.status_code != 200:
+                raise FilingsError(f"NSE returned HTTP {r.status_code} for {urlsplit(url).path}", "unavailable", NAME)
+            body = bytearray()
+            async for chunk in r.aiter_bytes():
+                body += chunk
+                if len(body) > MAX_DOC_BYTES:
+                    raise FilingsError(f"document larger than {MAX_DOC_BYTES // 1_048_576} MB refused", "unavailable", NAME)
+        return body
+
     def _fail(self, msg: str) -> None:
         self._breaker.failure()
         self._stats["errors"] += 1
         self._stats["last_error"] = msg[:200]
 
-    async def _api(self, path: str, params: dict[str, str]) -> Any:
-        """A JSON listing, cached on disk for LIST_TTL_SECONDS."""
+    async def _api(self, path: str, params: dict[str, str], ttl: float = LIST_TTL_SECONDS) -> Any:
+        """A JSON listing, cached on disk for `ttl` seconds (LIST_TTL_SECONDS by default)."""
         url = str(httpx.URL(f"{self.base_url}/{path}", params=params))
         p = self._cache_path(url, "json")
-        if p.exists() and time.time() - p.stat().st_mtime < LIST_TTL_SECONDS:
+        if p.exists() and time.time() - p.stat().st_mtime < ttl:
             self._stats["cache_hits"] += 1
             return json.loads(p.read_text())
         body = await self._get(url)
@@ -444,12 +462,29 @@ class NseFilingsProvider:
         return sorted(best.values(), key=lambda f: f["period_end"], reverse=True)
 
     async def statements(self, symbol: str, max_annual: int = 5, max_quarters: int = 5) -> dict[str, Any] | None:
-        """Annual and quarterly periods in the shape of an uploaded statements file (INR crore)."""
+        """Annual and quarterly periods in the shape of an uploaded statements file (INR crore), all on one basis.
+
+        Consolidated figures are preferred. Many companies began filing consolidated results later than standalone
+        ones (a first subsidiary, or the change to integrated filing), so when the consolidated set has fewer than two
+        annual years and standalone filings exist, the standalone set is built too and the one with more annual years
+        is kept (consolidated on a tie). Bases are never mixed, so year-on-year comparisons stay like for like."""
         filings = await self.result_filings(symbol)
         if not filings:
             return None
         bases = {f["basis"] for f in filings if f["kind"] == "quarterly"} or {f["basis"] for f in filings}
-        basis = "consolidated" if "consolidated" in bases else "standalone"
+        first = "consolidated" if "consolidated" in bases else "standalone"
+        built = await self._build(symbol, filings, first, max_annual, max_quarters)
+        other = "standalone" if first == "consolidated" else None
+        if other and other in {f["basis"] for f in filings} and (built is None or built["annual_years"] < 2):
+            alt = await self._build(symbol, filings, other, max_annual, max_quarters)
+            if alt is not None and (built is None or alt["annual_years"] > built["annual_years"]):
+                alt["warnings"].append(f"standalone figures used: consolidated filings cover {built['annual_years'] if built else 0} "
+                                       f"annual year(s), standalone filings cover {alt['annual_years']}")
+                built = alt
+        return built
+
+    async def _build(self, symbol: str, filings: list[dict[str, Any]], basis: str, max_annual: int,
+                     max_quarters: int) -> dict[str, Any] | None:
         chosen = [f for f in filings if f["basis"] == basis]
         periods: dict[tuple[str, date], dict[str, Any]] = {}
         warnings: list[str] = []
@@ -488,7 +523,7 @@ class NseFilingsProvider:
         restate_share_changes(ordered)
         return {"symbol": symbol.upper(), "exchange": "NSE", "currency": "INR", "unit": "crore", "source": f"NSE filings ({basis})",
                 "source_url": f"{self.base_url}/integrated-filing-results?index=equities&symbol={symbol.upper()}", "basis": basis,
-                "periods": ordered, "warnings": warnings,
+                "periods": ordered, "warnings": warnings, "annual_years": annual,
                 "retrieved_at": datetime.now(UTC).isoformat()}
 
     # ------------------------------------------------------------------ con-call transcripts
@@ -574,6 +609,51 @@ async def company_industry(p: NseFilingsProvider, symbol: str, today: date) -> s
                                                      "from_date": start.strftime("%d-%m-%Y"), "to_date": today.strftime("%d-%m-%Y")})
     rows = data if isinstance(data, list) else []
     return next((str(r["smIndustry"]).strip() for r in rows if str(r.get("smIndustry") or "").strip() not in ("", "-")), None)
+
+
+LIVE_LIST_TTL_SECONDS = 300  # market-wide lists NSE updates through the day
+
+
+async def fii_dii(p: NseFilingsProvider) -> list[dict[str, Any]]:
+    """NSE's provisional FII/FPI and DII cash-market activity (NSE, BSE and MSEI combined) for the
+    latest trading day it has published, in INR crore. NSE serves only the latest day."""
+    data = await p._api("fiidiiTradeReact", {}, ttl=LIVE_LIST_TTL_SECONDS)
+    return data if isinstance(data, list) else []
+
+
+async def market_announcements(p: NseFilingsProvider, start: date, end: date, ttl: float = LIVE_LIST_TTL_SECONDS) -> list[dict[str, Any]]:
+    """Every equity announcement filed with NSE between `start` and `end` (inclusive). `ttl=0` always asks NSE."""
+    data = await p._api("corporate-announcements", {"index": "equities", "from_date": start.strftime("%d-%m-%Y"),
+                                                     "to_date": end.strftime("%d-%m-%Y")}, ttl=ttl)
+    return data if isinstance(data, list) else []
+
+
+async def all_indices(p: NseFilingsProvider) -> tuple[list[dict[str, Any]], datetime | None]:
+    """Latest values of every NSE index (NSE's own index page feed) and the feed's IST timestamp."""
+    data = await p._api("allIndices", {}, ttl=60)
+    rows = data.get("data") if isinstance(data, dict) else None
+    stamp = None
+    try:
+        stamp = datetime.strptime(str(data.get("timestamp")), "%d-%b-%Y %H:%M").replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+    except (ValueError, AttributeError):
+        pass
+    return (rows if isinstance(rows, list) else []), stamp
+
+
+async def participant_oi(p: NseFilingsProvider, template: str, day: date) -> list[dict[str, str]] | None:
+    """NSE's participant-wise open interest (Client, DII, FII, Pro) in equity derivatives at the close of
+    `day`, in number of contracts, or None when NSE has no file for that day (a holiday)."""
+    url = template.replace("{ddmmyyyy}", day.strftime("%d%m%Y")).replace("{yyyymmdd}", day.strftime("%Y%m%d"))
+    try:
+        data = await p.document(url, "csv", ttl=None if day < datetime.now(UTC).date() else 3600)
+    except NotPublished:
+        return None
+    lines = data.decode("utf-8-sig", "replace").splitlines()
+    # The file opens with a quoted title line ("Participant wise Open Interest ... as on <date>").
+    start = next((i for i, ln in enumerate(lines) if ln.lower().startswith("client type")), None)
+    if start is None:
+        raise FilingsError(f"participant OI file for {day} has no header row", "unavailable", NAME)
+    return _csv("\n".join(lines[start:]).encode())
 
 
 def build_filings(s: Any) -> NseFilingsProvider:

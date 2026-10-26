@@ -34,7 +34,7 @@ test('ask: bullish over the last 3 days answers with a ranked 3-session movers t
   const table = page.getByTestId('ask-movers')
   await expect(table).toBeVisible({ timeout: 30_000 })
   await expect(table.locator('thead')).toContainText('3 sessions')
-  const pct = (await table.locator('tbody tr td:nth-child(5)').allTextContents()).map((t) => parseFloat(t.replace(/[^\d.-]/g, '')))
+  const pct = (await table.locator('tbody tr td:nth-child(5)').allTextContents()).map((t) => (t.includes('▼') ? -1 : 1) * parseFloat(t.replace(/[^\d.]/g, ''))) // ▼ marks a fall
   expect(pct.length).toBeGreaterThan(3)
   expect(pct).toEqual([...pct].sort((a, b) => b - a))
   await expect(page.getByTestId('ask-answer')).toContainText('Over the last 3 sessions')
@@ -50,16 +50,21 @@ test('rotation: every sector is plotted and the tail slider shortens the trails'
   const [plotted, total] = ((await cov.textContent()) ?? '').match(/\d+/g)!.map(Number)
   expect(plotted).toBe(total)
   const slider = page.getByTestId('rrg-tail')
-  const points = async () => (await page.locator('svg polyline').first().getAttribute('points'))!.trim().split(/\s+/).length
+  const points = async () => Number(await page.getByTestId('rrg-tail-path').first().getAttribute('data-points'))
+  // the default tail is two weeks of movement: three weekly points, enough to show direction and curvature
+  await expect(slider).toHaveValue('2')
+  await slider.fill('1')
+  await expect(page.getByText('1 week', { exact: true })).toBeVisible()
+  expect(await points()).toBe(2)
   await slider.fill('2')
   await expect(page.getByText('2 weeks', { exact: true })).toBeVisible()
-  expect(await points()).toBe(2)
+  expect(await points()).toBe(3) // N weeks of movement = N + 1 weekly points
   await page.screenshot({ path: `${SHOTS}/21-rotation-tail-2-weeks.png` })
   const max = Number(await slider.getAttribute('max'))
   await slider.fill(String(max))
-  expect(await points()).toBe(max)
+  expect(await points()).toBe(max + 1)
   await slider.fill('4')
-  expect(await points()).toBe(4)
+  expect(await points()).toBe(5)
   await page.screenshot({ path: `${SHOTS}/22-rotation-tail-4-weeks.png` })
 })
 

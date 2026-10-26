@@ -114,7 +114,7 @@ async def refresh(c: Container, s: AsyncSession, params: rrg.RRGParams | None = 
     if payload["coverage"]["sectors_plotted"] == 0:
         raise rrg.RRGError("no sector has enough history to plot")
     slot = slot_for(c.clock.now())
-    key = "default" if params is None else f"{params.ratio_window}-{params.momentum_window}-{params.trail}"
+    key = "default" if params is None else f"{params.ratio_window}-{params.momentum_window}-{params.trail}-s{params.smoothing}"
     row = await s.scalar(select(SectorRotationSnapshot).where(
         SectorRotationSnapshot.benchmark == c.benchmark_symbol, SectorRotationSnapshot.slot == slot, SectorRotationSnapshot.params_key == key))
     created = row is None

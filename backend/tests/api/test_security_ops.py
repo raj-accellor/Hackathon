@@ -89,7 +89,11 @@ def test_live_mode_never_points_at_mock_servers():
 # ------------------------------------------------------------ scheduling with a controllable clock
 def test_schedule_defaults_are_twelve_hourly_rrg_and_monthly_themes():
     trig = build_triggers(Settings(_env_file=None))
-    assert set(trig) == set(JOBS) == {"instruments", "prices", "rrg", "themes", "alerts"}
+    assert set(trig) == set(JOBS) == {"instruments", "prices", "rrg", "themes", "alerts", "fii_dii"}
+    # FII/DII is recorded on weekday evenings (IST), after NSE publishes the day's provisional figures
+    fri = trig["fii_dii"].get_next_fire_time(None, datetime(2026, 10, 23, 12, 0, tzinfo=UTC))  # Friday 17:30 IST
+    assert fri.weekday() == 4 and (fri.hour, fri.minute) == (19, 30) and str(fri.tzinfo) == "Asia/Kolkata"
+    assert trig["fii_dii"].get_next_fire_time(None, datetime(2026, 10, 23, 16, 30, tzinfo=UTC)).weekday() == 0  # after 21:30 IST Friday: Monday
     start = datetime(2026, 10, 12, 0, 30, tzinfo=UTC)
     fires, t = [], start
     for _ in range(4):
@@ -263,3 +267,14 @@ async def test_unreachable_redis_is_fatal_to_readiness_outside_local(demo):
     async with demo.make_client(redis_url="redis://127.0.0.1:6399/0", app_env="production") as (cl, _c):
         r = await cl.get("/health/ready")
         assert r.status_code == 503 and r.json()["checks"]["cache"].startswith("error")
+
+
+def test_cron_day_of_week_uses_standard_cron_numbering():
+    from app.workers.scheduler import standard_day_of_week as dow
+
+    assert dow("1-5") == "mon,tue,wed,thu,fri" and dow("0") == "sun" and dow("7") == "sun" and dow("0,6") == "sat,sun"
+    assert dow("*") == "*" and dow("0-6") == "*" and dow("mon-fri") == "mon-fri" and dow("1-5/2") == "mon,wed,fri"
+    trig = build_triggers(Settings(_env_file=None))
+    # weekday price refresh after the close: Monday's run exists and nothing runs on Saturday
+    t = trig["prices"].get_next_fire_time(None, datetime(2026, 10, 23, 15, 0, tzinfo=UTC))  # Friday 20:30 IST
+    assert t.weekday() == 0 and (t.hour, t.minute) == (19, 30)

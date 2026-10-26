@@ -21,23 +21,28 @@ export function QuoteHeader({ d }: { d: any }) {
   const prev = f.prev_close?.value
   const chg = lp?.value != null && prev ? (lp.value / prev - 1) * 100 : null
   return (
-    <div className="mb-4 flex flex-wrap items-end justify-between gap-4 rounded-lg border border-rule bg-surface px-4 py-4">
-      <div>
-        <div className="text-[13px] text-ink-2">
-          {d.instrument.exchange} · {d.instrument.instrument_type === 'INDEX' ? 'Index' : (d.instrument.sector ?? 'Equity')}
-          {d.instrument.industry && ` · ${d.instrument.industry}`}
-        </div>
-        <h1 className="text-[26px] font-semibold leading-tight">
-          {d.instrument.symbol} <span className="font-normal text-ink-2">{d.instrument.name}</span>
-        </h1>
-      </div>
-      <div className="flex flex-col items-end gap-2 text-right">
+    <div className="panel mb-4 rounded-xl border border-rule bg-surface px-5 py-4 lg:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="m-0 flex flex-wrap items-center gap-2 text-[13px] text-ink-2">
+          <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs font-semibold text-ink">{d.instrument.exchange}</span>
+          <span>
+            {d.instrument.instrument_type === 'INDEX' ? 'Index' : (d.instrument.sector ?? 'Equity')}
+            {d.instrument.industry && `, ${d.instrument.industry}`}
+          </span>
+        </p>
         <RefreshButton
           keys={[['instrument'], ['quote'], ['instrument-metrics'], ['history'], ['financials'], ['research']]}
           job={() => post(`/instruments/${encodeURIComponent(`${d.instrument.exchange}:${d.instrument.symbol}`)}/refresh`)}
           label="Fetch latest"
           hint="Fetch the latest prices for this instrument from the MCP sources and recompute its metrics"
         />
+      </div>
+      <div className="mt-3 flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
+        <div className="min-w-0">
+          <h1 className="font-display text-[34px] font-semibold leading-[1.05] tracking-[-0.025em] lg:text-[40px]">{d.instrument.symbol}</h1>
+          {d.instrument.name && <p className="m-0 mt-1 text-[16px] text-ink-2">{d.instrument.name}</p>}
+        </div>
+        <div className="text-right">
         <div>
         {quoteLoading ? (
           <div role="status" aria-live="polite" className="flex flex-col items-end gap-1.5">
@@ -46,11 +51,13 @@ export function QuoteHeader({ d }: { d: any }) {
           </div>
         ) : lp?.value != null ? (
           <>
-            <div className="num font-display text-[34px] font-semibold leading-none">
-              <span className="mr-1 text-lg text-ink-2">₹</span>
+            <div className="num font-display text-[34px] font-semibold leading-none tracking-[-0.02em] lg:text-[40px]">
+              <span className="mr-1 text-[0.5em] text-ink-2">₹</span>
               {fmtNum(lp.value)}
             </div>
-            <div className={`num mt-1 ${signClass(chg)}`}>{fmtSigned(chg, 2)} vs previous close</div>
+            <div className={`num mt-1.5 font-semibold ${signClass(chg)}`}>
+              {fmtSigned(chg, 2)} <span className="font-normal text-ink-2">vs previous close</span>
+            </div>
             <div className="mt-1 flex flex-wrap justify-end gap-1.5 text-xs text-ink-2">
               <Badge tone={lp.status === 'delayed' ? 'warn' : 'neutral'}>{lp.status === 'delayed' ? 'Delayed quote' : 'Quote'}</Badge>
               <span>
@@ -73,6 +80,7 @@ export function QuoteHeader({ d }: { d: any }) {
             </ul>
           </div>
         )}
+          </div>
         </div>
       </div>
     </div>

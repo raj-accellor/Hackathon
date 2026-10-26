@@ -33,7 +33,7 @@ from app.db.models import (
 from app.domain import reconcile, rrg, scoring
 from app.domain.theme_dsl import METRIC_CATALOG, Filter
 from app.services import ask as ask_service
-from app.services import ingestion, jobs, metrics, pipeline, screener, sector_rotation
+from app.services import assistant, ingestion, jobs, metrics, pipeline, screener, sector_rotation
 from app.services.jobs import audit
 
 router = APIRouter()
@@ -105,6 +105,13 @@ async def sources_status(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
         {"key": "fundamentals", "label": "Fundamentals files", "role": "financial statements (no MCP source provides them)", **c.fundamentals.status()},
         {"key": "web_search", "label": "Web search", "role": "news and filings for research", **c.search.status()},
         {"key": "llm", "label": f"LLM ({c.llm.label})", "role": "research synthesis and concall classification", **c.llm.status()},
+        {"key": "tickertape_mcp", "label": "Tickertape MCP", "role": "fallback: fundamental metrics missing from NSE filings",
+         **(c.tickertape.health() if c.tickertape is not None else {"state": "not_configured", "auth": {"state": "not_configured"}})},
+        {"key": "nse_filings", "label": "NSE public files", "role": "announcements, FII/DII, F&O bhavcopy, participant OI, filings",
+         **c.filings.status()},
+        {"key": "macro_chart", "label": "Market chart feed", "role": "macro: crude, dollar index, USD/INR, US yields, Sensex", **c.chart.status()},
+        {"key": "mospi_cpi", "label": "MOSPI CPI API", "role": "macro: India CPI inflation", **c.cpi.status()},
+        {"key": "fred", "label": "FRED", "role": "macro: US CPI, Fed funds, unemployment, India 10Y", **c.fred.status()},
     ]
     return {
         **meta(c), "connectors": connectors,
@@ -145,6 +152,93 @@ async def broker_logout(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
     await audit(s, actor, "broker.logout", "connector", None, {"provider": "kite_mcp"})
     await s.commit()
     return {**meta(c), "kite_mcp": state}
+
+
+# ------------------------------------------------------------------ Tickertape MCP (OAuth)
+def _tickertape(c: Any) -> Any:
+    tt = c.tickertape
+    if tt is None or not tt.configured:
+        raise ApiError(409, "not_configured", "Tickertape MCP is not configured (set TICKERTAPE_MCP_URL).")
+    return tt
+
+
+@router.post("/sources/tickertape/login", dependencies=[rate_limit("default")])
+async def tickertape_login(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """A fresh Tickertape authorisation link for the account holder to open (read-only `market_data` scope).
+    When the saved session is still valid, the current state is returned and no link is issued."""
+    tt = _tickertape(c)
+    if tt.auth.authorised:
+        return {**meta(c), "tickertape": tt.auth.state()}
+    try:
+        link = await tt.auth.login_link()
+    except ProviderUnavailable as e:
+        raise ApiError(502, "tickertape_unavailable", str(e)) from e
+    await audit(s, actor, "tickertape.login_link", "source", "tickertape_mcp")
+    await s.commit()
+    return {**meta(c), "tickertape": {**tt.auth.state(), "login_url": link}}
+
+
+_CALLBACK_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tickertape · Markets Intelligence</title><style>body{{font:16px system-ui,sans-serif;max-width:34rem;margin:4rem auto;padding:0 1rem;
+color:#14213d}}h1{{font-size:1.4rem}}a{{color:#2e4fb8}}</style></head><body><h1>{title}</h1><p>{body}</p>
+<p><a href="/status">Open Data status</a></p><script>setTimeout(function(){{location.replace('/status')}},{delay})</script></body></html>"""
+
+
+@router.get("/sources/tickertape/callback", include_in_schema=False)
+async def tickertape_callback(c: Ctx, s: Db, code: str | None = None, state: str | None = None, error: str | None = None,
+                              error_description: str | None = None) -> Response:
+    """Tickertape redirects here after the account holder approves (or declines). The code is exchanged server-side,
+    bound to the single-use state and the PKCE verifier only this server holds; no token reaches the browser."""
+    import html as _html
+
+    tt = _tickertape(c)
+    if error or not code or not state:
+        msg = _html.escape((error_description or error or "The authorisation response was incomplete.")[:300])
+        return Response(_CALLBACK_PAGE.format(title="Tickertape was not connected", body=msg, delay=8000), 400, media_type="text/html")
+    try:
+        await tt.auth.complete(code, state)
+        await tt.start()
+    except ProviderUnavailable as e:
+        return Response(_CALLBACK_PAGE.format(title="Tickertape was not connected", body=_html.escape(str(e)[:300]), delay=8000), 400,
+                        media_type="text/html")
+    await audit(s, "local", "tickertape.authorised", "source", "tickertape_mcp", {"tools": len(tt.tools())})
+    await s.commit()
+    await jobs.start_background(c, "tickertape_fundamentals", "tickertape_fundamentals", pipeline.tickertape_fundamentals_job,
+                                "tickertape_login", "local")
+    return Response(_CALLBACK_PAGE.format(title="Tickertape connected",
+                                          body="Read-only access is approved. Missing fundamental metrics will now be filled from "
+                                               "Tickertape where NSE filings do not provide them. Returning to the app…", delay=2500),
+                    media_type="text/html")
+
+
+@router.post("/sources/tickertape/logout", dependencies=[rate_limit("default")])
+async def tickertape_logout(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Discard the saved Tickertape tokens. The app then holds no access to the account."""
+    tt = _tickertape(c)
+    state = await tt.disconnect()
+    await audit(s, actor, "tickertape.logout", "source", "tickertape_mcp")
+    await s.commit()
+    return {**meta(c), "tickertape": state}
+
+
+@router.post("/sources/tickertape/backfill", dependencies=[rate_limit("refresh")])
+async def tickertape_backfill(c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """Fill fundamentals NSE filings leave missing from Tickertape, then recompute metrics. Runs as a background job."""
+    tt = _tickertape(c)
+    if not tt.auth.authorised:
+        raise ApiError(409, "login_required", "Connect Tickertape first.")
+    job_id = await jobs.start_background(c, "tickertape_fundamentals", "tickertape_fundamentals", pipeline.tickertape_fundamentals_job,
+                                         "manual", actor)
+    await audit(s, actor, "tickertape.backfill", "source", "tickertape_mcp", {"job_id": job_id})
+    await s.commit()
+    return {**meta(c), "job_id": job_id}
+
+
+@router.get("/sources/tickertape/tools")
+async def tickertape_tools(c: Ctx) -> dict[str, Any]:
+    """The read-only tools the Tickertape MCP advertises to this session (after the policy filter), with schemas."""
+    tt = _tickertape(c)
+    return {**meta(c), "auth": tt.auth.state(), "tools": tt.tools(), "health": tt.health()}
 
 
 @router.post("/sources/rediscover", dependencies=[rate_limit("refresh")])
@@ -344,9 +438,16 @@ async def _screen(c: Any, s: Any, filters: str | None, sectors: str | None, q: s
                   page_size: int, columns: str | None) -> dict[str, Any]:
     try:
         cols = screener.validate_columns([x for x in columns.split(",") if x] if columns else None)
-        return screener.run(await metrics.latest_rows(s), filters=_parse_filters(filters),
+        parsed = _parse_filters(filters)
+        annual_years = None
+        if parsed:  # only needed to explain why instruments without a filtered metric are left out
+            stored = dict((await s.execute(select(FinancialPeriod.instrument_id, func.count()).group_by(FinancialPeriod.instrument_id))).all())
+            annual = dict((await s.execute(select(FinancialPeriod.instrument_id, func.count()).where(FinancialPeriod.period_type == "annual")
+                                           .group_by(FinancialPeriod.instrument_id))).all())
+            annual_years = {iid: annual.get(iid, 0) for iid in stored}
+        return screener.run(await metrics.latest_rows(s), filters=parsed,
                             sectors=[x for x in sectors.split(",") if x] if sectors else None, search=q, sort=sort, order=order,
-                            page=page, page_size=page_size, columns=cols)
+                            page=page, page_size=page_size, columns=cols, annual_years=annual_years)
     except screener.ScreenerError as e:
         raise ApiError(422, "invalid_screen", str(e)) from e
 
@@ -420,13 +521,15 @@ def _rot_dict(c: Any, snap: SectorRotationSnapshot, now: Any) -> dict[str, Any]:
 async def get_rotation(c: Ctx, s: Db, actor: Actor, snapshot_id: int | None = None,
                        ratio_window: Annotated[int | None, Query(ge=4, le=52)] = None,
                        momentum_window: Annotated[int | None, Query(ge=2, le=26)] = None,
-                       trail: Annotated[int | None, Query(ge=2, le=26)] = None, end: date | None = None) -> dict[str, Any]:
-    """Latest stored snapshot by default. Passing lookback parameters or an end date computes an
-    on-demand view from stored prices (not persisted) with the same documented method."""
-    custom = any(v is not None for v in (ratio_window, momentum_window, trail, end))
+                       trail: Annotated[int | None, Query(ge=2, le=26)] = None, end: date | None = None,
+                       smoothing: Annotated[int | None, Query(ge=0, le=10)] = None) -> dict[str, Any]:
+    """Latest stored snapshot by default. Passing lookback parameters, smoothing or an end date computes an
+    on-demand view from stored prices (not persisted) with the same documented method (`smoothing=0` is rrg-v1)."""
+    custom = any(v is not None for v in (ratio_window, momentum_window, trail, end, smoothing))
     if custom:
         base = rrg.RRGParams()
-        params = rrg.RRGParams(ratio_window or base.ratio_window, momentum_window or base.momentum_window, trail or base.trail)
+        params = rrg.RRGParams(ratio_window or base.ratio_window, momentum_window or base.momentum_window, trail or base.trail,
+                               smoothing=base.smoothing if smoothing is None else smoothing)
         insts = list((await s.scalars(select(Instrument))).all())
         bars = await ingestion.load_bars(s)
         try:
@@ -573,6 +676,24 @@ async def ask(body: AskIn, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
     out = await ask_service.ask(c, s, body.question.strip())
     await audit(s, actor, "ask", None, None, {"question": body.question[:200], "intent": out["plan"]["intent"],
                                               "plan_source": out["plan_source"], "answer_source": out["answer_source"]})
+    await s.commit()
+    return {**meta(c), **out}
+
+
+# ------------------------------------------------------------------ chat assistant
+class ChatIn(BaseModel):
+    messages: list[assistant.ChatTurn] = Field(min_length=1, max_length=40)
+    current_path: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/assistant/chat", dependencies=[rate_limit("chat")])
+async def assistant_chat(body: ChatIn, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    """In-app guide: answers what the app does and returns a validated in-app page to open, if one fits."""
+    if body.messages[-1].role != "user":
+        raise ApiError(422, "invalid_chat", "The last message must come from the user.")
+    out = await assistant.chat(c, s, body.messages, body.current_path)
+    await audit(s, actor, "assistant.chat", None, None, {"message": body.messages[-1].content[:200], "source": out["source"],
+                                                         "navigate": (out["navigate"] or {}).get("path")})
     await s.commit()
     return {**meta(c), **out}
 

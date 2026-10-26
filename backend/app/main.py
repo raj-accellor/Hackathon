@@ -19,7 +19,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.v1 import market, user
+from app.api.v1 import market, pulse, user
 from app.core.config import Settings, get_settings
 from app.core.container import Container, build_container
 from app.db.models import ConcallTranscript, Instrument, PriceBar
@@ -250,6 +250,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
 
     app.include_router(market.router, prefix="/api/v1")
     app.include_router(user.router, prefix="/api/v1")
+    app.include_router(pulse.router, prefix="/api/v1")
     return app
 
 

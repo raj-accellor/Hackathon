@@ -21,12 +21,12 @@ from app.domain import financial_metrics as fm
 from app.domain.result import MetricValue, Status, bad, ok
 from app.domain.scoring import percentile_ranks
 from app.domain.theme_dsl import METRIC_CATALOG
-from app.services import sector_rotation
+from app.services import provider_ratios, sector_rotation
 from app.services.ingestion import load_bars
 
 VERSIONS = {"fundamentals": fm.VERSION, "valuation": valuation.VERSION, "technicals": technicals.VERSION, "risk": risk.VERSION,
             "score": scoring.VERSION, "entry": entry_setup.VERSION, "rrg": rrg.VERSION, "adjust": adjust.VERSION,
-            "reconcile": reconcile.VERSION}
+            "reconcile": reconcile.VERSION, "provider_ratios": provider_ratios.VERSION}
 FRESH_DAYS = 4
 
 _FUND_NAMES = [n for n, m in METRIC_CATALOG.items() if m["group"] == "fundamentals"]
@@ -101,6 +101,7 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
         meta_by[iid] = {"source": src, "currency": last.currency, "unit": last.unit, "ingested_at": last.ingested_at.isoformat(),
                         "is_demo": last.is_demo, "source_url": last.source_url, "other_sources": sorted(k for k in groups if k != src)}
 
+    tt_ratios = await provider_ratios.load(s)
     equities = [i for i in insts if i.instrument_type != "INDEX"]
     bundles: dict[int, dict[str, MetricValue]] = {}
     extras: dict[int, dict[str, Any]] = {}
@@ -122,17 +123,22 @@ async def compute_all(c: Container, s: AsyncSession) -> dict[str, Any]:
             if bo == "insufficient_history"
             else ok("breakout_signal", {"breakout": 1.0, "breakdown": -1.0, "none": 0.0}[bo], "count", "close vs prior 55-bar range", {"status": bo}))
         fb, fmeta = fundamentals_for(periods.get(inst.id, []), inst.sector_kind, last_close)
+        # Tickertape fills only what NSE filings leave `missing`; it never overrides an NSE-based value.
+        filled = provider_ratios.overlay(fb, tt_ratios.get(inst.id), inst.sector_kind)
+        if filled:
+            fmeta = {**fmeta, "fallback": {"provider": provider_ratios.PROVIDER, "metrics": filled,
+                                           "retrieved_at": tt_ratios[inst.id].retrieved_at.isoformat()}}
         m.update(fb)
         sec = rot.get(inst.sector or "")
         sec_series = series["sectors"].get(inst.sector or "", {}).get("series")
         if sec and sec.get("status") == "ok" and sec["trail"]:
             pt = sec["trail"][-1]
-            m["sector_rs_ratio"] = ok("sector_rs_ratio", pt["rs_ratio"], "score", "sector RS-Ratio (rrg-v1)", {"sector": inst.sector, "date": pt["date"]})
-            m["sector_rs_momentum"] = ok("sector_rs_momentum", pt["rs_momentum"], "score", "sector RS-Momentum (rrg-v1)", {"sector": inst.sector})
+            m["sector_rs_ratio"] = ok("sector_rs_ratio", pt["rs_ratio"], "score", f"sector RS-Ratio ({rrg.VERSION})", {"sector": inst.sector, "date": pt["date"]})
+            m["sector_rs_momentum"] = ok("sector_rs_momentum", pt["rs_momentum"], "score", f"sector RS-Momentum ({rrg.VERSION})", {"sector": inst.sector})
         else:
             why = (sec or {}).get("reason") or "sector series unavailable"
-            m["sector_rs_ratio"] = bad("sector_rs_ratio", Status.MISSING, why, "score", "sector RS-Ratio (rrg-v1)")
-            m["sector_rs_momentum"] = bad("sector_rs_momentum", Status.MISSING, why, "score", "sector RS-Momentum (rrg-v1)")
+            m["sector_rs_ratio"] = bad("sector_rs_ratio", Status.MISSING, why, "score", f"sector RS-Ratio ({rrg.VERSION})")
+            m["sector_rs_momentum"] = bad("sector_rs_momentum", Status.MISSING, why, "score", f"sector RS-Momentum ({rrg.VERSION})")
         if sec_series is not None:
             m["sector_return_3m"] = technicals.period_return(sec_series.loc[: pd.Timestamp(as_of)], "3M", "sector_return_3m")
             m["rel_strength_vs_sector_3m"] = technicals.relative_strength(df["close"], sec_series, "3M", "rel_strength_vs_sector_3m")

@@ -10,6 +10,9 @@ in the repository.
 | [`01-system-analysis.md`](01-system-analysis.md) | What the system is, how it is built (services, data flow, stack), what runs where, and the configuration surface |
 | [`02-running-locally.md`](02-running-locally.md) | Step-by-step local run guide: prerequisites, one-command start, demo vs live mode, running pieces separately, Docker Compose on a laptop, tests, troubleshooting |
 | [`03-container-cloud-deployment.md`](03-container-cloud-deployment.md) | The container story: the two images, the one change needed for cloud, then full walkthroughs for Azure Container Apps, AWS ECS Fargate, Google Cloud Run, and plain Kubernetes — plus scaling and operations |
+| [`04-azure-migration.md`](04-azure-migration.md) | The full Azure plan: architecture, every Azure resource, complete env-var → Key Vault/env mapping, `az` provisioning steps, Container App YAML, GitHub OIDC CI/CD, security, monitoring, backups/DR, environments, cost, risks, runbook and checklist |
+| [`05-data-storage-and-flow.html`](05-data-storage-and-flow.html) | HTML reference: where every kind of data is stored (database tables, files, cache, browser), how each service calls its data (connectors, MCP machinery, scheduled vs on-demand), and the five layers of backend filtering — code-free |
+| [`azure-setup-guide.md`](azure-setup-guide.md) | Beginner, click-by-click Azure portal guide to creating every Azure service inside a company-provided resource group (including an Azure OpenAI model in AI Foundry for the LLM), with fallbacks for limited permissions |
 
 ## TL;DR — three commands to run it locally
 

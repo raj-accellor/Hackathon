@@ -32,9 +32,11 @@ CAPABILITY_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "search": ("bhav", ("search_symbols", "nse_lookup_symbol")),
     "bulk_quote": ("bhav", ("get_bulk_quote",)),
     "market_breadth": ("bhav", ("get_market_breadth",)),
+    "ltp_by_date": ("bhav", ("get_ltp_by_date",)),
     "top_movers": ("bhav", ("get_top_movers",)),
     "quote": ("cm", ("cm_get_stock_quote",)),
     "live_movers": ("cm", ("nse_get_market_movers",)),
+    "equity_stocks": ("cm", ("cm_get_equity_stocks",)),
     "data_status": ("cm", ("cm_get_data_status",)),
     # Nothing in the published tool lists serves these; they resolve to not_supported unless a
     # server starts advertising a matching tool name.
@@ -198,6 +200,22 @@ class NseMcpProvider:
             )
         return QuoteResult(symbol.upper(), fields, self.name, now, row if isinstance(row, dict) else {})
 
+    async def index_quote(self, name: str) -> dict[str, Any]:
+        """Live value of one NSE index with its day range and 52-week range."""
+        payload, tool = await self._call("index_quote", {"index_name": name})
+        row = ps.unwrap_quote(payload)
+        last = ps.to_float(ps.pick(row, ps.QUOTE_KEYS["last_price"]))
+        if last is None:
+            raise ProviderUnavailable(f"{tool}: no value returned for {name}", "unavailable", self.name)
+        prev = ps.to_float(ps.pick(row, ps.QUOTE_KEYS["prev_close"]))
+        as_of = ps.parse_datetime(ps.pick(row, ps.QUOTE_TIME_KEYS))
+        return {"name": name, "value": last, "prev_close": prev, "open": ps.to_float(ps.pick(row, ps.QUOTE_KEYS["open"])),
+                "high": ps.to_float(ps.pick(row, ps.QUOTE_KEYS["high"])), "low": ps.to_float(ps.pick(row, ps.QUOTE_KEYS["low"])),
+                "year_high": ps.to_float(ps.pick(row, ("yearhigh", "52weekhigh", "high52"))),
+                "year_low": ps.to_float(ps.pick(row, ("yearlow", "52weeklow", "low52"))),
+                "as_of": as_of.isoformat() if as_of else None, "provider": self.name, "source_id": tool,
+                "retrieved_at": datetime.now(UTC).isoformat(), "is_demo": self.is_demo}
+
     async def get_corporate_actions(self, symbol: str) -> list[CorporateAction]:
         today = datetime.now(UTC).date()
         payload, _tool = await self._call("corporate_actions", {"symbol": symbol.upper(), "start_date": today - timedelta(days=5 * 366),
@@ -249,12 +267,42 @@ class NseMcpProvider:
                     "provider": self.name, "source_id": tool, "retrieved_at": now, "is_demo": self.is_demo}
         return out
 
+    async def equity_snapshot(self, prefix: str) -> tuple[dict[str, dict[str, Any]], bool]:
+        """Delayed live quotes for every equity whose symbol starts with `prefix` (one call, at most 500 rows).
+        Returns the quotes and whether the server's row cap may have cut the list short."""
+        payload, tool = await self._call("equity_stocks", {"limit": 500, "symbolFilter": prefix})
+        rows = ps.find_rows(payload)
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            sym = ps.pick(r, ("symbol",))
+            price = ps.to_float(ps.pick(r, ps.QUOTE_KEYS["last_price"]))
+            if not sym or price is None:
+                continue
+            t = ps.parse_datetime(ps.pick(r, ps.QUOTE_TIME_KEYS))
+            out[str(sym).upper()] = {"last_price": price, "prev_close": ps.to_float(ps.pick(r, ps.QUOTE_KEYS["prev_close"])),
+                                     "change_pct": ps.to_float(ps.pick(r, ps.QUOTE_KEYS["change_pct"])), "as_of": t.isoformat() if t else None,
+                                     "source_id": tool}
+        return out, len(rows) >= 500
+
+    async def close_on(self, symbol: str, day: date) -> tuple[date | None, float] | None:
+        """Closing price on `day`, or on the trading day before it when `day` had no session."""
+        payload, _tool = await self._call("ltp_by_date", {"symbol": symbol.upper(), "date": day})
+        if not isinstance(payload, dict | list):  # the live tool answers with the bare price
+            price = ps.to_float(payload)
+            return None if price is None else (None, price)
+        row = ps.unwrap_quote(payload) if isinstance(payload, dict) else (ps.find_rows(payload) or [{}])[0]
+        price = ps.to_float(ps.pick(row, ps.QUOTE_KEYS["last_price"] + ps.BAR_KEYS["close"] + ("price",)))
+        if price is None:
+            return None
+        return ps.parse_date(ps.pick(row, ps.BAR_KEYS["date"] + ("actualdate", "tradingday"))), price
+
     async def market_breadth(self) -> dict[str, Any]:
         payload, tool = await self._call("market_breadth", {"date": datetime.now(UTC).date()})
         return {"data": payload, "source_id": tool, "provider": self.name, "retrieved_at": datetime.now(UTC).isoformat(), "is_demo": self.is_demo}
 
-    async def live_movers(self) -> dict[str, Any]:
-        payload, tool = await self._call("live_movers", {"limit": 10})
+    async def live_movers(self, limit: int = 10, index_name: str | None = None) -> dict[str, Any]:
+        """Live top gainers and losers; `index_name` None means all securities."""
+        payload, tool = await self._call("live_movers", {"limit": limit, "index_name": index_name})
         return {"data": payload, "source_id": tool, "provider": self.name, "retrieved_at": datetime.now(UTC).isoformat(), "is_demo": self.is_demo}
 
     async def data_status(self) -> dict[str, Any]:

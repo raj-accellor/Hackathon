@@ -5,6 +5,7 @@ import { SourcesSchema } from '../api/schemas'
 import { Async, Badge, Button, Kv, Missing, Notice, PageHeader, Panel, RefreshButton, StateBadge } from '../components/ui'
 import { PROVIDER_LABEL, ago, fmtDate, fmtDateTime, fmtNum } from '../lib/format'
 import { KiteSessionPanel } from '../components/BrokerLogin'
+import { TickertapeSessionPanel } from '../components/TickertapeConnect'
 
 const CAP_LABEL: Record<string, string> = {
   history: 'Daily price history',
@@ -92,6 +93,9 @@ export function Status() {
       )}
       <Panel title="Zerodha Kite session" className="mb-4">
         <KiteSessionPanel />
+      </Panel>
+      <Panel title="Tickertape session" className="mb-4">
+        <TickertapeSessionPanel />
       </Panel>
       <Async q={q} rows={12}>
         {(d) => {

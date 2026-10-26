@@ -52,6 +52,64 @@ start-up errors; documentation under `analysis/`.
 - Documentation: `analysis/HOW_TO_RUN.md` (rewritten), `analysis/REPOSITORY_GUIDE.md` (new),
   `analysis/ARCHITECTURE.md` (new), `analysis/RUN_AND_DEPLOY.md` (cloud deployment, updated).
 
+## Changes and results, 2026-10-26: market pulse
+
+Requested: Accellor title suffix; stocks-in-the-news module with move since the news (news left, the day's
+stocks right, headline click shows the short description); macro section; FII/DII summary with past data;
+Nifty 50 / Sensex / Nifty Bank at the top of Overview; OI and top-movers section.
+
+- Title: tab title "Markets Intelligence · An Accellor product"; sidebar subtitle "An Accellor product".
+- New pages (Markets group): Market news, Macro, FII / DII flows, F&O and open interest. Overview has an index strip.
+- New routes: `/api/v1/markets/indices`, `/markets/news`, `/macro`, `/flows/fii-dii`, `/flows/participant-oi`,
+  `/derivatives/movers`, `/derivatives/oi`. Code: `api/v1/pulse.py`, `services/{news,macro,flows,derivatives}.py`,
+  `connectors/macro.py`, `domain/derivatives.py`.
+- Sources (all verified live 2026-10-26): NSE corporate announcements (market-wide), NSE `fiidiiTradeReact`,
+  NSE F&O bhavcopy and participant-OI archive files, NSE CM MCP (`cm_get_index_quote`, `nse_get_market_movers`,
+  `cm_get_stock_quote`, `cm_get_equity_stocks`), bhavcopy MCP `get_ltp_by_date`, NSE `allIndices` (index fallback),
+  MOSPI CPI API, a v8 chart endpoint for crude/DXY/USD-INR/US yields/global indices/Sensex (unofficial; terms to
+  confirm), FRED (optional `FRED_API_KEY`).
+- Decisions: Sensex comes from the chart feed (no NSE source publishes the BSE index). NSE serves FII/DII cash
+  figures for the latest day only, so they are stored daily (`fii_dii_flows`, migration `b7c1d2e3f4a5`, job
+  `fii_dii` at 19:30 and 21:30 IST on weekdays); history starts with the first recording and is not backfilled. Past derivatives
+  positioning is available for any date from NSE's participant-OI archive. OI buildup per underlying sums OI
+  across expiries (a roll is not counted as unwinding); price change is the near month's settlement vs previous close.
+  MOSPI's TLS needs legacy renegotiation, allowed for that client only (certificates still verified).
+- Fixed on the way: scheduler crons used APScheduler's Monday-0 weekday numbering, so `1-5` ran Tuesday to
+  Saturday (price refresh missed Monday and ran Saturday). Crons are now read with standard cron numbering.
+- Not available / limits: MOSPI's API latest CPI month is Dec 2025 (shown as stale); FRED rows need a key; during
+  NSE CM MCP outages (seen several times on 2026-10-26, HTTP 504) news moves show "NSE quotes are unavailable",
+  gainers/losers fall back to end-of-day F&O, indices fall back to NSE's index feed.
+- Results: backend 427 passed, 3 skipped (Redis-only); ruff and mypy clean; `alembic upgrade head` + `alembic check`
+  clean on PostgreSQL; frontend typecheck clean, 18 tests passed, builds; e2e against an isolated demo stack 35 passed,
+  2 failed in the full run and passed when rerun alone (refresh rate-limit / timing). The spec `fixes.spec.ts`
+  now reads ▼ as a negative value.
+
+### Follow-up, 2026-10-26: "none of the new features are working"
+
+- Cause: the running `scripts/dev.sh` API had been started before the changes and ran uvicorn without reload, so
+  every new route answered 404 through the web app. The code was fine; the running process was stale.
+- Fix: `scripts/dev.sh` now starts the API with `--reload` (watching `backend/app`; `DEV_RELOAD=false` turns it off)
+  and takes `WEB_PORT` (default 5173). Verified: the updated script on API 8001 / web 5174 served all seven new
+  routes with 200 while the stale stack on 5173 still answered 404, and an edit to `services/news.py` was picked up
+  with "WatchFiles detected changes ... Reloading". Screenshots of each page in `.playwright-mcp/proof-*.png` (local).
+- Also: news rows priced only at end of day now say the live price is unavailable instead of "no session since".
+
+### Follow-up, 2026-10-26: Kite fallback, macro reading, FII/DII history
+
+- Zerodha Kite MCP (read-only `get_quotes`) is now the fallback whenever NSE's MCP fails: news prices (NSE live →
+  Kite live → NSE end of day), Nifty / Nifty Bank / India VIX (NSE → Kite → NSE index feed), Sensex (Kite → chart feed),
+  top gainers/losers (ranked from Kite quotes over the segment's constituents or the F&O stocks).
+- F&O: until NSE publishes today's F&O file, the OI page is live from Kite (current OI and price of every futures
+  contract) against the last published file; past dates and Kite failures use the end-of-day file, labelled.
+- Macro: a rule-based reading at the top (Risky / Neutral / Safe / Insufficient data) from 11 signals with fixed,
+  displayed thresholds (`macro-regime-v1`); stale indicators are skipped.
+- FII/DII history: official NSDL FPI daily figures from NSDL's public archive (table `fpi_daily`, migration
+  `c3d4e5f6a7b8`), merged with NSE's recorded provisional FII/DII. Page: presets, custom from/to dates and a
+  "Refresh historical data" button (`POST /api/v1/flows/history/refresh`). No public source has past DII figures;
+  DII history grows from the daily recording. The evening job also refreshes the current NSDL month.
+- Results: backend 439 passed, 3 skipped; ruff, mypy, `alembic check` clean on PostgreSQL; frontend 18 passed, builds.
+  Live: Kite priced the news stocks with NSE forced down; history refresh stored 138 NSDL days (Apr–Oct 2026).
+
 ## Test results (fresh run, 2026-10-12)
 
 - `cd backend && uv run pytest` → 271 passed, 3 skipped (Redis-only tests), 86% line coverage
@@ -115,3 +173,50 @@ index quotes from NSE, Kite lookup by exact `id`. Recorded schemas live in
    analysis with the model.
 3. Supply statement files for the tracked universe.
 4. Install Docker and run `docker compose --profile demo up --build`; apply the migration to PostgreSQL.
+
+## Chat assistant (2026-10-26) — done
+- Floating icon bottom-right on every page (`frontend/src/components/ChatAssistant.tsx`, mounted in `Layout`); history kept per browser session.
+- `POST /api/v1/assistant/chat` (`backend/app/services/assistant.py`): uses the existing server-side `LLM_*` provider (OpenRouter, `z-ai/glm-5.3-flash`) with a validated `AssistantReply`; the model may only pick a page id from the catalog, and stocks/themes are resolved against the database before a route is returned. Keyword fallback when the model is unavailable. Own rate limit `RATE_LIMIT_CHAT_PER_MINUTE` (default 20); every chat is audited.
+- The assistant does not answer market facts from model memory; it points to the page with sourced data.
+- Tests: `backend/tests/services/test_assistant.py` (15, mocked LLM), `frontend/e2e/assistant.spec.ts` (desktop + mobile).
+
+## Market news fixes (2026-10-26) — done
+- Cause of the empty "Today" page: NSE announcements failed with intermittent TCP ConnectTimeout (NAT64/IPv6 network); the service returned an empty list and cached it as a valid result.
+- Fixes: last good NSE/web items are kept in the cache (Redis, 7 days) and served marked `stale` with their retrieval time during an outage; outage/stale results are never cached; NSE filings connect timeout 8s with one retry of a failed connect.
+- `GET /api/v1/markets/news?refresh=true` skips the response cache and the NSE disk cache; the page's "Re-fetch all news" button uses it.
+- The page polls every 2 minutes at all hours, including in background tabs (response cache and announcement TTL cut to 60s so each poll is fresh).
+- Tests: `test_news_outage_keeps_last_good_items_marked_stale_and_is_not_cached`, `test_a_stuck_connect_is_retried_once_before_counting_as_an_outage`, `frontend/e2e/news-refetch.spec.ts`.
+
+## Sector rotation readability (2026-10-26) — done
+- Cause of the long, jumpy tails: `rrg-v1` used raw weekly RS with no smoothing, so one noisy week moved a sector 5–10 points.
+- `rrg-v2` (`backend/app/domain/rrg.py`): trailing EMA (span `smoothing=4` weeks) on RS before RS-Ratio and on RS-Momentum. On stored NSE data the median weekly move fell from 1.93 to 0.72 points and the largest from 10.4 to 4.5. `smoothing=0` reproduces v1 exactly; `GET /sector-rotation?smoothing=0` shows it. Older v1 snapshots are kept.
+- Chart (`frontend/src/components/Charts.tsx`): curved, tapering tails coloured by current quadrant; collision-free labels with leader lines; axes fit the data; quadrant roster beside the chart with linked highlighting; week-by-week replay; 2-week default tail. Data notes and sector chips are collapsed on the page.
+- Tests: `test_rrg_v2_smoothing_*` (domain), rotation e2e in `app.spec.ts`/`fixes.spec.ts`/`live-proof.spec.ts`.
+
+## Watchlists and alerts split (2026-10-26) — done
+- `/watchlists` (`/watchlists/:id`): list switcher, weekly breadth line, sortable table with per-column diverging move bars, score meters, rename (`PATCH /api/v1/watchlists/{id}`), per-row "Set alert".
+- `/alerts`: sentence-style builder (prefilled from a watchlist row via `?instrument=&id=`), alert list with pause switches and filter, day-grouped notification history.
+- Assistant routes "alerts" and "watchlists" to separate pages.
+
+## Tickertape fallback for missing fundamentals (2026-10-26) — done
+- `backend/app/services/provider_ratios.py`: resolves SIDs (`in_resolve_sid_read`, batches halved on 404 to isolate unlisted tickers), fetches ratios with `in_screen_stocks_read` (10 SIDs per call), stores raw + mapped values in `provider_ratios` (migration `d4e5f6a7b8c9`).
+- Precedence: NSE-based values always win. Tickertape fills only `missing`; never `not_meaningful` or `not_applicable`; bank/NBFC rules apply; non-positive Tickertape multiples become `not_meaningful`. Each filled metric records provider, field, SID and retrieval time; the screener marks such cells "TT".
+- Runs after each price refresh, after Tickertape login, and on `POST /api/v1/sources/tickertape/backfill`.
+- Result on live data (2,591 stocks): stocks missing P/E, ROE or D/E 888 → 581; truly missing P/E 336 → 65, P/B 342 → 4, ROE 342 → 13, D/E 430 → 9, market cap 341 → 11. Remaining blanks are mostly negative-earnings P/E (`not_meaningful`) and bank D/E (`not_applicable`). 3 tickers are not listed on Tickertape.
+- Known data issue (not changed): AARON shows P/B ≈ 532,278x from NSE-based figures; needs a units check on its filings.
+- Tests: `backend/tests/services/test_provider_ratios.py` (7).
+- Follow-up: screener exclusions now give a precise reason per instrument, with example symbols (`missing_reason` in `backend/app/services/screener.py`): listed recently (one financial year on NSE and Tickertape), prior-year figure zero/negative, no statements anywhere, rights entitlements (`-RE`), stopped trading (no price for 30+ days, e.g. LTIM). The note is a collapsed, neutral disclosure. For "Revenue growth YoY ≥ 2" the remaining 21 exclusions all fall in these groups; none can be filled from Tickertape (checked against its income statements).
+- E2E refresh tests now wait for the first load before clicking Refresh (on the live universe the click raced the in-flight load).
+
+## Frontend enhancement via Figma (2026-10-26) — done
+- Figma file "Markets Intelligence — UI Enhancement" (https://www.figma.com/design/yJjsnDxzrRI3FEY44x0m6V): `MI / color` variable collection (Light only; the Starter plan allows one mode, dark values stay in `frontend/src/index.css`), 16 `icon/*` components, `NavItem`, `StatTile`, `MoverRow`, and an enhanced Overview screen (illustrative DEMO values only).
+- Code: `frontend/src/components/Icons.tsx` (same SVG paths as Figma); sidebar icons and uppercase group labels; search icon and `/` shortcut; `StatTile`, `QuadrantChip`, `DivergingBar`, `MagnitudeBar` in `ui.tsx`; Overview Universe tiles (breadth split meter), sector table with quadrant chips and 1-month diverging bars, ranked leaderboards with magnitude bars.
+- Fixes: Nifty 50 ticker's hidden labels widened the page (track was not positioned); leaderboard grid overflowed on phones.
+
+## Design pass 2: "market desk" (2026-10-27) — done
+- Direction (also in the Figma file as "v2 / Market desk hero"): the NSE trading session is the signature element. Overview opens with an IST date, session state, a 09:00–16:00 session band with a marigold "now" marker, the three headline indices with source/as-of, and the Nifty 50 tape.
+- `frontend/src/lib/session.ts` (+ `src/test/session.test.ts`, 6 tests): session phase from the clock in IST. Exchange holidays are not known; the UI says so under the band and in the top-bar tooltip.
+- Every page: top-bar session indicator (`SessionChip`), sentence-case sidebar groups, larger page titles, 12 px panel radius.
+- Overview: `MarketDesk` replaces the separate ticker, page header and index cards (`IndexStrip` kept for its tests); "Ask the market" is a light panel; sector table shows 8 rows with a "Show all" control.
+- Instrument page: two-row header (classification + refresh, then symbol vs price with provenance).
+- Not verified: e2e suite in demo mode (the running dev server is live mode, which the demo-mode specs do not expect).

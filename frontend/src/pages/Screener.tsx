@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { api, useApi } from '../api/client'
 import { ScreenerSchema, type Screener as ScreenerData } from '../api/schemas'
 import { PillarGlyph, pillarScores } from '../components/Score'
-import { Async, Badge, Button, Dialog, EmptyState, Missing, Notice, PageHeader, Panel, RefreshButton, RiskBadge, StateBadge, cx } from '../components/ui'
+import { Async, Badge, Button, Dialog, EmptyState, Missing, PageHeader, Panel, RefreshButton, RiskBadge, StateBadge, cx } from '../components/ui'
 import { fmtDate, fmtDateTime, fmtMetric } from '../lib/format'
 import { instrumentPath } from './Overview'
 
@@ -301,9 +301,40 @@ export function Screener() {
             <>
               {d.excluded_for_missing_filter_metric > 0 && (
                 <div className="px-4 pt-3">
-                  <Notice tone="warn">
-                    {d.excluded_for_missing_filter_metric} instrument{d.excluded_for_missing_filter_metric === 1 ? ' is' : 's are'} left out because a filtered metric is not available for {d.excluded_for_missing_filter_metric === 1 ? 'it' : 'them'}.
-                  </Notice>
+                  <details className="rounded-md border border-rule bg-surface-2 px-4 py-2.5 text-[13px]" data-testid="excluded-note">
+                    <summary className="cursor-pointer text-ink-2">
+                      <strong className="font-semibold text-ink">{d.excluded_for_missing_filter_metric}</strong> {d.excluded_for_missing_filter_metric === 1 ? 'instrument has' : 'instruments have'} no{' '}
+                      {(d.excluded_by_metric ?? []).map((x) => x.label).join(' or ')} value on NSE or Tickertape, so {d.excluded_for_missing_filter_metric === 1 ? 'it is' : 'they are'} left out. See why
+                    </summary>
+                    <p className="m-0 mt-2 text-ink-2">A missing value is never treated as zero, so it can neither pass nor fail a filter.</p>
+                    {(d.excluded_by_metric ?? []).map((x) => (
+                      <div key={x.metric} className="mt-2" data-testid="excluded-reasons">
+                        {(d.excluded_by_metric ?? []).length > 1 && <p className="m-0 font-semibold">{x.label}</p>}
+                        <ul className="m-0 list-none space-y-1 p-0">
+                          {x.reasons.map((r) => (
+                            <li key={r.reason} className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2">
+                              <span className="num text-right font-semibold">{r.count}</span>
+                              <span>
+                                {r.reason.charAt(0).toUpperCase() + r.reason.slice(1)}
+                                {r.examples && r.examples.length > 0 && (
+                                  <span className="text-ink-2">
+                                    {': '}
+                                    {r.examples.map((s: string, k: number) => (
+                                      <span key={s}>
+                                        {k > 0 && ', '}
+                                        <Link to={`/instrument/NSE:${encodeURIComponent(s)}`}>{s}</Link>
+                                      </span>
+                                    ))}
+                                    {r.count > r.examples.length && `, and ${r.count - r.examples.length} more`}
+                                  </span>
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </details>
                 </div>
               )}
               {d.items.length === 0 ? (
@@ -312,6 +343,12 @@ export function Screener() {
                 </EmptyState>
               ) : (
                 <div className="scroll-x">
+                  {d.items.some((it: any) => it.fallback && Object.keys(it.fallback).length > 0) && (
+                    <p className="m-0 border-b border-rule px-4 py-2 text-xs text-ink-2" data-testid="tickertape-legend">
+                      <sup className="mr-1 text-[9.5px] font-semibold text-link">TT</sup>
+                      Filled from Tickertape where NSE filings could not supply the value. NSE-based values always take precedence; hover a value for its source.
+                    </p>
+                  )}
                   <table className="text-[13px]">
                     <caption className="sr-only">Screener results. Percent columns are percentages, x columns are multiples, currency is INR.</caption>
                     <thead>
@@ -360,6 +397,11 @@ export function Screener() {
                                 ) : (
                                   <Missing {...it.missing[c.key]} />
                                 )
+                              ) : (it as any).fallback?.[c.key] ? (
+                                <span title="NSE filings could not supply this value; it is Tickertape's figure (Tickertape MCP, read-only)" data-testid="tickertape-cell">
+                                  {fmtMetric(c.key, it.values[c.key], c.unit)}
+                                  <sup className="ml-0.5 text-[9.5px] font-semibold text-link">TT</sup>
+                                </span>
                               ) : (
                                 fmtMetric(c.key, it.values[c.key], c.unit)
                               )}

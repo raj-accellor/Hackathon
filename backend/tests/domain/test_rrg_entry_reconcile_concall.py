@@ -220,3 +220,34 @@ def test_quote_grounding_normalises_whitespace_and_case_but_rejects_inventions()
     assert not cs.quote_is_grounded("commission the new Dahej plant by Q1 FY26", text)
     assert not cs.quote_is_grounded("", text)
     assert not cs.quote_is_grounded("plant", text)  # too short to count as evidence
+
+
+def _steps(trail):
+    return [float(np.hypot(b.rs_ratio - a.rs_ratio, b.rs_momentum - a.rs_momentum)) for a, b in zip(trail, trail[1:], strict=False)]
+
+
+def test_rrg_v2_smoothing_shortens_noisy_tails_and_zero_reproduces_v1():
+    rng = np.random.default_rng(7)
+    n = 600
+    b = series(100 * np.cumprod(1 + rng.normal(0, 0.01, n)))
+    s = series(100 * np.cumprod(1 + rng.normal(0.0002, 0.018, n)))  # noisy sector
+    raw = rrg.compute_rrg({"S": s}, b, params=rrg.RRGParams(smoothing=0)).sectors["S"].trail
+    smooth = rrg.compute_rrg({"S": s}, b).sectors["S"].trail
+    assert rrg.RRGParams().smoothing == 4 and rrg.VERSION == "rrg-v2"
+    assert np.median(_steps(smooth)) < 0.6 * np.median(_steps(raw))
+    assert max(_steps(smooth)) < max(_steps(raw))
+    # smoothing=0 is exactly the v1 formula
+    df = pd.concat([s.resample("W-FRI").last().rename("s"), b.resample("W-FRI").last().rename("b")], axis=1).dropna()
+    rs = df["s"] / df["b"]
+    ratio = 100 * rs / rs.rolling(12).mean()
+    mom = 100 * ratio / ratio.rolling(5).mean()
+    assert raw[-1].rs_ratio == pytest.approx(float(ratio.iloc[-1])) and raw[-1].rs_momentum == pytest.approx(float(mom.iloc[-1]))
+
+
+def test_rrg_v2_smoothing_uses_only_past_data():
+    rng = np.random.default_rng(3)
+    b = series(100 * np.cumprod(1 + rng.normal(0, 0.01, 500)))
+    s = series(100 * np.cumprod(1 + rng.normal(0, 0.015, 500)))
+    full = {p.date: p for p in rrg.compute_rrg({"S": s}, b, params=rrg.RRGParams(trail=26)).sectors["S"].trail}
+    cut = rrg.compute_rrg({"S": s.iloc[:430]}, b.iloc[:430]).sectors["S"].trail[-2]
+    assert full[cut.date].rs_ratio == pytest.approx(cut.rs_ratio) and full[cut.date].rs_momentum == pytest.approx(cut.rs_momentum)

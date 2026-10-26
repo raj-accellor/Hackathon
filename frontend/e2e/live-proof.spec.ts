@@ -63,7 +63,7 @@ test('live: rotation plots every sector and the tail slider works', async ({ pag
   const [plotted, total] = ((await cov.textContent()) ?? '').match(/\d+/g)!.map(Number)
   expect(plotted).toBe(total)
   await page.getByTestId('rrg-tail').fill('3')
-  expect((await page.locator('svg polyline').first().getAttribute('points'))!.trim().split(/\s+/).length).toBe(3)
+  await expect(page.getByTestId('rrg-tail-path').first()).toHaveAttribute('data-points', '4') // 3 weeks of movement = 4 weekly points
   await page.screenshot({ path: `${SHOTS}/live-07-rotation-all-sectors-tail-3.png`, fullPage: true })
 })
 

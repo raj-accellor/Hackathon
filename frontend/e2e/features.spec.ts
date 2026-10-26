@@ -103,7 +103,8 @@ const PAGES: Array<[string, string, string]> = [
   ['/rotation', 'Sector rotation', '11-refresh-rotation'],
   ['/research', 'Research board', '12-refresh-research'],
   ['/concalls', 'Concall follow-through', '13-refresh-concalls'],
-  ['/watchlists', 'Watchlists and alerts', '14-refresh-watchlists'],
+  ['/watchlists', 'Watchlists', '14-refresh-watchlists'],
+  ['/alerts', 'Alerts', '14b-refresh-alerts'],
   ['/status', 'Data status', '15-refresh-status'],
 ]
 
@@ -111,6 +112,8 @@ for (const [path, title, shot] of PAGES) {
   test(`refresh button on ${title} reloads its data`, async ({ page }) => {
     await page.goto(path)
     await expect(page.getByRole('heading', { name: title, level: 1 })).toBeVisible()
+    // let the first load finish: a refresh clicked while it is in flight is merged into that same request
+    await page.waitForLoadState('networkidle')
     const reloads: string[] = []
     page.on('request', (r) => r.url().includes('/api/v1/') && reloads.push(r.url()))
     const btn = page.getByTestId('page-refresh').last()

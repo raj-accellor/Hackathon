@@ -1,14 +1,19 @@
 """Relative Rotation Graph calculation.
 
-Method `rrg-v1` (this project's own documented method; it does not reproduce any vendor's
+Method `rrg-v2` (this project's own documented method; it does not reproduce any vendor's
 proprietary RRG algorithm):
 
 1. Resample sector and benchmark closes to weekly (last close of each week ending Friday).
 2. RS(t)          = sector close / benchmark close.
-3. RS-Ratio(t)    = 100 * RS(t) / SMA(RS, ratio_window)(t).
-4. RS-Momentum(t) = 100 * RS-Ratio(t) / SMA(RS-Ratio, momentum_window)(t).
+3. RS~(t)         = EMA(RS, span=smoothing)(t)  (trailing exponential smoothing; damps one-week noise).
+4. RS-Ratio(t)    = 100 * RS~(t) / SMA(RS~, ratio_window)(t).
+5. RS-Momentum(t) = EMA(100 * RS-Ratio / SMA(RS-Ratio, momentum_window), span=smoothing)(t).
 
-Both axes are centred on 100. Every value at time t uses data up to t only. Price series should
+`smoothing = 0` skips steps 3 and the EMA in 5, which is exactly `rrg-v1`. On stored NSE data (Oct 2026, 22
+sectors, 10-week trails) a 4-week span cut the median weekly move from 1.93 to 0.72 points and the largest from
+10.4 to 4.5, so tails show the rotation rather than week-to-week noise.
+
+Both axes are centred on 100. Every value at time t uses data up to t only (EMAs and SMAs are trailing). Price series should
 be consistently adjusted; total-return indices are preferable when available.
 """
 
@@ -20,7 +25,7 @@ from typing import Any
 
 import pandas as pd
 
-VERSION = "rrg-v1"
+VERSION = "rrg-v2"
 
 
 class RRGError(ValueError):
@@ -32,6 +37,7 @@ class RRGParams:
     ratio_window: int = 12  # weeks
     momentum_window: int = 5  # weeks
     trail: int = 10  # weekly observations plotted
+    smoothing: int = 4  # EMA span in weeks; 0 = no smoothing (rrg-v1)
     frequency: str = "W-FRI"
 
 
@@ -109,8 +115,12 @@ def compute_rrg(sectors: Mapping[str, pd.Series], benchmark: pd.Series, params: 
                                   reason=f"{len(df)} overlapping weekly observation(s), {need} required")
             continue
         rs = df["s"] / df["b"]
+        if params.smoothing > 0:
+            rs = rs.ewm(span=params.smoothing, adjust=False).mean()
         ratio = 100 * rs / rs.rolling(params.ratio_window).mean()
         mom = 100 * ratio / ratio.rolling(params.momentum_window).mean()
+        if params.smoothing > 0:
+            mom = mom.ewm(span=params.smoothing, adjust=False).mean()
         pts = pd.concat([ratio.rename("r"), mom.rename("m")], axis=1).dropna().iloc[-params.trail:]
         trail = [RRGPoint(ts.date().isoformat(), float(r.r), float(r.m)) for ts, r in pts.iterrows()]
         out[name] = SectorRRG(name, "ok", quadrant(trail[-1].rs_ratio, trail[-1].rs_momentum), trail,

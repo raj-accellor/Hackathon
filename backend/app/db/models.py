@@ -423,3 +423,55 @@ class AuditEvent(Base):
     entity_id: Mapped[str | None] = mapped_column(String(60))
     detail: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     request_id: Mapped[str | None] = mapped_column(String(40))
+
+
+class FiiDiiFlow(Base):
+    """NSE's provisional FII/FPI and DII cash-market activity for one trading day, in INR crore. NSE serves
+    only the latest day, so history is the record of what this system retrieved on each day."""
+
+    __tablename__ = "fii_dii_flows"
+    __table_args__ = (UniqueConstraint("trade_date", "category", name="uq_fii_dii_day_category"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trade_date: Mapped[date] = mapped_column(Date, index=True)
+    category: Mapped[str] = mapped_column(String(20))  # FII/FPI | DII
+    buy_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    sell_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    net_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    source: Mapped[str] = mapped_column(String(80))
+    retrieved_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class FpiDaily(Base):
+    """NSDL's daily FPI investment figures (INR crore) by reporting date. NSDL's report for a date covers FPI
+    trades of the previous trading day."""
+
+    __tablename__ = "fpi_daily"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reporting_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    equity_exchange_buy: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    equity_exchange_sell: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    equity_exchange_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    equity_primary_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    equity_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    equity_net_usd_mn: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    total_net: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    usd_inr: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    source: Mapped[str] = mapped_column(String(80))
+    retrieved_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class ProviderRatios(Base):
+    """Ratios a secondary provider reports for an instrument (one row per instrument and provider). Used only to fill
+    metrics the primary source (NSE filings) cannot compute; `raw` is the payload as returned, `values` the fields
+    mapped to this app's metric names and units."""
+
+    __tablename__ = "provider_ratios"
+    __table_args__ = (UniqueConstraint("instrument_id", "provider"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instruments.id", ondelete="CASCADE"), index=True)
+    provider: Mapped[str] = mapped_column(String(30))
+    provider_ref: Mapped[str | None] = mapped_column(String(40))  # the provider's own identifier (Tickertape SID)
+    values: Mapped[dict[str, Any]] = mapped_column(JSON)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSON)
+    source_url: Mapped[str | None] = mapped_column(String(500))
+    retrieved_at: Mapped[datetime] = mapped_column(TS, default=utcnow, index=True)

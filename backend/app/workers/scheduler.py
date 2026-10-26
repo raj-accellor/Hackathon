@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import Settings
 from app.core.container import Container
-from app.services import jobs, pipeline
+from app.services import flows, jobs, pipeline
 
 # job id -> (settings attribute holding the cron expression, job function, description)
 JOBS: dict[str, tuple[str, Any, str]] = {
@@ -21,12 +21,45 @@ JOBS: dict[str, tuple[str, Any, str]] = {
     "rrg": ("rrg_refresh_cron", pipeline.rrg_job, "Sector rotation (RRG) snapshot, every 12 hours"),
     "themes": ("theme_refresh_cron", pipeline.themes_job, "Monthly theme membership and ranking snapshots"),
     "alerts": ("alerts_cron", pipeline.alerts_job, "Alert evaluation"),
+    "fii_dii": ("fii_dii_cron", flows.fii_dii_job, "Record NSE's provisional FII/DII figures for the day"),
 }
+
+
+_DOW = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+
+
+def standard_day_of_week(field: str) -> str:
+    """Standard cron numbers days of the week from Sunday (0 or 7 = Sunday, 1 = Monday); APScheduler numbers
+    them from Monday (0 = Monday), so `1-5` would run Tuesday to Saturday. Numeric days are rewritten as
+    names, which APScheduler reads unambiguously; named days and `*` pass through."""
+    if not any(ch.isdigit() for ch in field.split("/")[0]):
+        return field
+    days: set[int] = set()
+    for part in field.split(","):
+        rng, _, step = part.partition("/")
+        if rng == "*":
+            lo, hi = 0, 6
+        elif "-" in rng:
+            a, b = rng.split("-")
+            lo, hi = int(a), int(b)
+        else:
+            lo = hi = int(rng)
+        days.update(d % 7 for d in range(lo, hi + 1, int(step) if step else 1))
+    if days == set(range(7)):
+        return "*"
+    return ",".join(_DOW[d] for d in sorted(days, key=lambda d: (d + 6) % 7))  # Monday first
+
+
+def to_trigger(expr: str, tz: ZoneInfo) -> CronTrigger:
+    parts = expr.split()
+    if len(parts) == 5:
+        parts[4] = standard_day_of_week(parts[4])
+    return CronTrigger.from_crontab(" ".join(parts), timezone=tz)
 
 
 def build_triggers(settings: Settings) -> dict[str, CronTrigger]:
     tz = ZoneInfo(settings.default_market_timezone)
-    return {job_id: CronTrigger.from_crontab(getattr(settings, attr), timezone=tz) for job_id, (attr, _fn, _d) in JOBS.items()}
+    return {job_id: to_trigger(getattr(settings, attr), tz) for job_id, (attr, _fn, _d) in JOBS.items()}
 
 
 class Scheduler:

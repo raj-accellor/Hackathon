@@ -10,9 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.connectors.fundamentals_file import FileFundamentalsProvider
 from app.connectors.kite_mcp import ALLOWED_TOOLS, KiteMcpProvider
 from app.connectors.llm import ChatCompletionsLLM, build_llm
+from app.connectors.macro import build_macro
 from app.connectors.mcp_client import McpClient
+from app.connectors.nsdl import NsdlFpiProvider
 from app.connectors.nse_filings import NseFilingsProvider, build_filings
 from app.connectors.nse_mcp import NseMcpProvider
+from app.connectors.tickertape_mcp import TickertapeProvider, build_tickertape
 from app.connectors.web_search import build_search
 from app.core.cache import build_cache
 from app.core.config import Settings
@@ -38,6 +41,11 @@ class Container:
     limiters: dict[str, SlidingWindowLimiter] = field(default_factory=dict)
     scheduler: Any = None
     cache_note: str | None = None
+    chart: Any = None  # macro.ChartProvider
+    cpi: Any = None  # macro.MospiCpiProvider
+    fred: Any = None  # macro.FredProvider
+    nsdl: Any = None  # nsdl.NsdlFpiProvider
+    tickertape: TickertapeProvider | None = None
 
     async def check_cache(self) -> None:
         """Confirm the configured cache answers. In local runs an unreachable Redis is replaced by
@@ -63,12 +71,17 @@ class Container:
         await self.check_cache()
         await self.nse.start()
         await self.kite.start()
+        if self.tickertape is not None:
+            await self.tickertape.start()
 
     async def close(self) -> None:
         await self.nse.close()
         await self.kite.close()
         await self.llm.close()
         await self.filings.close()
+        for p in (self.chart, self.cpi, self.fred, self.nsdl, self.tickertape):
+            if p is not None:
+                await p.close()
         await self.cache.close()
         await self.engine.dispose()
 
@@ -113,10 +126,14 @@ def build_container(s: Settings, clock: Clock | None = None) -> Container:
     limiters = {
         "research": SlidingWindowLimiter(s.rate_limit_research_per_minute, 60, clock),
         "refresh": SlidingWindowLimiter(s.rate_limit_refresh_per_minute, 60, clock),
+        "chat": SlidingWindowLimiter(s.rate_limit_chat_per_minute, 60, clock),
         "default": SlidingWindowLimiter(s.rate_limit_default_per_minute, 60, clock),
     }
+    chart, cpi, fred = build_macro(s)
     return Container(
-        settings=s, engine=engine, sessions=make_sessionmaker(engine), cache=cache, clock=clock, nse=nse, kite=kite,
+        chart=chart, cpi=cpi, fred=fred, settings=s, tickertape=build_tickertape(s, clock),
+        nsdl=NsdlFpiProvider(s.nsdl_fpi_archive_url, s.nse_filings_cache_dir / "nsdl", user_agent=s.nse_filings_user_agent,
+                             timeout=s.nse_filings_timeout_seconds, enabled=not s.is_demo), engine=engine, sessions=make_sessionmaker(engine), cache=cache, clock=clock, nse=nse, kite=kite,
         fundamentals=FileFundamentalsProvider(fundamentals_dir, allow_demo=s.is_demo), filings=build_filings(s),
         search=build_search(s.web_search_provider, _secret(s.web_search_api_key), s.web_search_timeout_seconds, base_url=s.web_search_base_url,
                             disabled_reason="Web research is off in demo mode: demo symbols are fictional, so a real search "

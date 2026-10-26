@@ -28,6 +28,9 @@ export const ScreenerSchema = Envelope.extend({
   as_of: z.string().nullable(),
   computed_at: z.string().nullable(),
   excluded_for_missing_filter_metric: z.number(),
+  excluded_by_metric: z
+    .array(z.object({ metric: z.string(), label: z.string(), count: z.number(), reasons: z.array(z.object({ reason: z.string(), count: z.number(), examples: z.array(z.string()).optional() })) }))
+    .optional(),
 }).loose()
 
 export const RotationSchema = Envelope.extend({

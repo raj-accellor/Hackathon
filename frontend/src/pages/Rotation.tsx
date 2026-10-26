@@ -90,7 +90,9 @@ export function Rotation() {
                 <span>{d.on_demand ? 'Computed on demand, not stored' : `Snapshot computed ${fmtDateTime(d.computed_at)}`}</span>
                 <span>
                   Lookback {d.params.ratio_window} weeks, momentum {d.params.momentum_window} weeks, trail {d.params.trail} weeks
+                  {d.params.smoothing ? `, smoothing ${d.params.smoothing} weeks` : ', unsmoothed'}
                 </span>
+                <span className="text-ink-3">Method {d.version}</span>
                 <span>
                   {d.coverage.sectors_plotted} of {d.coverage.sectors_total} sectors plotted
                 </span>
@@ -102,13 +104,16 @@ export function Rotation() {
                 </Notice>
               )}
               {d.flags?.length > 0 && (
-                <Notice tone="warn" title="Data notes.">
-                  <ul className="m-0 mt-1 list-disc pl-5">
-                    {d.flags.slice(0, 8).map((f: string) => (
+                <details className="rounded-md border border-warn/30 bg-warn-soft px-4 py-2 text-[13px]">
+                  <summary className="cursor-pointer font-medium text-warn">
+                    {d.flags.length} {d.flags.length === 1 ? 'note' : 'notes'} on how sectors are built and how fresh they are
+                  </summary>
+                  <ul className="m-0 mt-1.5 list-disc pl-5 text-ink-2">
+                    {d.flags.map((f: string) => (
                       <li key={f}>{f}</li>
                     ))}
                   </ul>
-                </Notice>
+                </details>
               )}
               <Panel>
                 <div className="flex flex-wrap items-end gap-3 border-b border-rule px-4 py-3">
@@ -166,17 +171,28 @@ export function Rotation() {
                     </Button>
                   )}
                 </div>
-                <fieldset className="m-0 flex flex-wrap gap-1.5 border-0 px-4 pt-3">
-                  <legend className="sr-only">Sectors shown</legend>
-                  {names.map((n) => {
-                    const on = !hidden.includes(n)
-                    return (
-                      <button key={n} aria-pressed={on} onClick={() => setHidden(on ? [...hidden, n] : hidden.filter((x) => x !== n))} className={cx('rounded border px-2 py-0.5 text-xs', on ? 'border-rule-strong bg-surface' : 'border-rule bg-surface-2 text-ink-3 line-through')}>
-                        {n}
-                      </button>
-                    )
-                  })}
-                </fieldset>
+                <details className="border-b border-rule px-4 py-2 text-[13px]">
+                  <summary className="cursor-pointer text-ink-2">
+                    Sectors shown: <strong className="text-ink">{names.length - hidden.length}</strong> of {names.length}
+                  </summary>
+                  <fieldset className="m-0 mt-2 flex flex-wrap gap-1.5 border-0 p-0">
+                    <legend className="sr-only">Sectors shown</legend>
+                    <Button variant="quiet" className="min-h-[26px] px-2 py-0 text-xs" onClick={() => setHidden([])} disabled={hidden.length === 0}>
+                      Show all
+                    </Button>
+                    <Button variant="quiet" className="min-h-[26px] px-2 py-0 text-xs" onClick={() => setHidden(names)} disabled={hidden.length === names.length}>
+                      Hide all
+                    </Button>
+                    {names.map((n) => {
+                      const on = !hidden.includes(n)
+                      return (
+                        <button key={n} aria-pressed={on} onClick={() => setHidden(on ? [...hidden, n] : hidden.filter((x) => x !== n))} className={cx('rounded border px-2 py-0.5 text-xs', on ? 'border-rule-strong bg-surface' : 'border-rule bg-surface-2 text-ink-3 line-through')}>
+                          {n}
+                        </button>
+                      )
+                    })}
+                  </fieldset>
+                </details>
                 <RRGChart
                   sectors={d.sectors}
                   selected={selected}
@@ -261,7 +277,10 @@ export function Rotation() {
             ))}
           </dl>
           <p className="m-0">
-            <strong>Movement.</strong> Each line shows the last weeks, ending at the labelled dot. Sectors often travel clockwise, but they do not have to.
+            <strong>Movement.</strong> Each tail shows the last weeks, thin and faint for older weeks, ending at the labelled dot. Its colour is the quadrant the sector is in now. Sectors often travel clockwise, but they do not have to.
+          </p>
+          <p className="m-0">
+            <strong>Smoothing.</strong> Weekly relative strength is smoothed with a short trailing average before plotting, so a single noisy week does not throw a sector across the chart. Only past weeks are used.
           </p>
           <pre className="m-0 whitespace-pre-wrap rounded bg-surface-2 p-3 text-xs text-ink-2">{q.data?.method}</pre>
           <p className="m-0 text-[13px] text-ink-2">{q.data?.interpretation} This is this project's own documented method; it is not a reproduction of any vendor's proprietary calculation.</p>

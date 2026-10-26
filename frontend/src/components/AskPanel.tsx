@@ -42,13 +42,13 @@ export function AskPanel({ benchmark, benchmarkSymbol, examples }: { benchmark: 
   }
   const current = history[0]
   return (
-    <section aria-labelledby="ask-title" className="overflow-hidden rounded-[14px] bg-rail text-rail-ink">
-      <div className="rail-grid grid gap-6 px-5 py-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(260px,1fr)] lg:px-7 lg:py-7">
+    <section aria-labelledby="ask-title" className="panel overflow-hidden rounded-2xl border border-rule bg-surface">
+      <div className="grid gap-6 px-5 py-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(260px,1fr)] lg:px-7 lg:py-7">
         <form onSubmit={submit} className="min-w-0">
-          <h2 id="ask-title" className="font-display text-[26px] font-semibold leading-tight text-white lg:text-[30px]">
+          <h2 id="ask-title" className="font-display text-[24px] font-semibold leading-tight tracking-[-0.015em] lg:text-[28px]">
             Ask the market
           </h2>
-          <p className="mt-1 max-w-[60ch] text-[14px] text-rail-ink">
+          <p className="mt-1 max-w-[62ch] text-[14px] text-ink-2">
             Ask in plain words. Prices come live from NSE and the broker MCP sources; when a source is down, the answer uses the last values stored in the database and says so.
           </p>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
@@ -61,9 +61,9 @@ export function AskPanel({ benchmark, benchmarkSymbol, examples }: { benchmark: 
               onChange={(e) => setQ(e.target.value)}
               maxLength={500}
               placeholder="e.g. Which banks have the strongest 3-month momentum?"
-              className="min-h-[46px] w-full rounded-[9px] border border-rail-2 bg-[#0b1530] px-4 text-[15px] text-white placeholder:text-rail-ink-2 focus-visible:border-accent"
+              className="min-h-[48px] w-full rounded-[10px] border border-rule-strong bg-surface-2 px-4 text-[15px] text-ink placeholder:text-ink-3 hover:border-ink-3 focus-visible:border-accent focus-visible:bg-surface"
             />
-            <Button type="submit" variant="accent" busy={m.isPending} className="min-h-[46px] px-5 text-[15px]" data-testid="ask-submit">
+            <Button type="submit" variant="accent" busy={m.isPending} className="min-h-[48px] px-6 text-[15px]" data-testid="ask-submit">
               Ask
             </Button>
           </div>
@@ -73,36 +73,36 @@ export function AskPanel({ benchmark, benchmarkSymbol, examples }: { benchmark: 
                 key={x}
                 type="button"
                 onClick={() => submit(undefined, x)}
-                className="rounded-full border border-rail-2 px-3 py-1 text-[12.5px] text-rail-ink transition-colors hover:border-accent hover:text-white"
+                className="rounded-full border border-rule bg-surface px-3 py-1 text-[12.5px] text-ink-2 transition-colors hover:border-accent hover:bg-accent-soft hover:text-ink"
               >
                 {x}
               </button>
             ))}
           </div>
         </form>
-        <div className="flex min-w-0 flex-col justify-between rounded-[10px] border border-rail-2 bg-[#0b1530]/70 p-4">
+        <div className="flex min-w-0 flex-col justify-between rounded-xl bg-surface-2 p-4">
           <div className="flex items-baseline justify-between gap-3">
-            <span className="text-[13px] text-rail-ink-2">{benchmark?.symbol ?? benchmarkSymbol}</span>
-            {benchmark && <span className="text-[11.5px] text-rail-ink-2">Close {fmtDate(benchmark.last_bar)}</span>}
+            <span className="text-[13px] font-medium text-ink-2">{benchmark?.symbol ?? benchmarkSymbol}</span>
+            {benchmark && <span className="text-[11.5px] text-ink-3">Close {fmtDate(benchmark.last_bar)}</span>}
           </div>
           {benchmark ? (
             <>
-              <div className="num mt-1 font-display text-[34px] font-semibold leading-none text-white">{fmtNum(benchmark.close)}</div>
+              <div className="num mt-1 font-display text-[30px] font-semibold leading-none tracking-[-0.02em]">{fmtNum(benchmark.close)}</div>
               <div className="mt-2 flex gap-4 text-[13px]">
-                <span className={benchmark.return_1w >= 0 ? 'text-[#5fd8bf]' : 'text-[#ff9c8a]'}>{fmtSigned(benchmark.return_1w)} 1 week</span>
-                <span className={benchmark.return_1m >= 0 ? 'text-[#5fd8bf]' : 'text-[#ff9c8a]'}>{fmtSigned(benchmark.return_1m)} 1 month</span>
+                <span className={signClass(benchmark.return_1w)}>{fmtSigned(benchmark.return_1w)} 1 week</span>
+                <span className={signClass(benchmark.return_1m)}>{fmtSigned(benchmark.return_1m)} 1 month</span>
               </div>
-              <div className="mt-3 [&_path]:stroke-accent">
+              <div className="mt-3 [&_path]:stroke-link">
                 <Sparkline values={benchmark.sparkline} width={320} height={64} label={`${benchmark.symbol} closes over the last 60 sessions`} />
               </div>
             </>
           ) : (
-            <p className="mt-2 text-[13px] text-rail-ink">No stored history for {benchmarkSymbol} yet. Ask about the market to fetch a live index quote.</p>
+            <p className="mt-2 text-[13px] text-ink-2">No stored history for {benchmarkSymbol} yet. Ask about the market to fetch a live index quote.</p>
           )}
         </div>
       </div>
       {(m.isPending || m.error || current) && (
-        <div className="border-t border-rail-2 bg-surface px-5 py-5 text-ink lg:px-7" aria-live="polite">
+        <div className="border-t border-rule bg-surface px-5 py-5 text-ink lg:px-7" aria-live="polite">
           {m.isPending && <AskSkeleton question={q} />}
           {m.error && !m.isPending && (
             <Notice tone="bad" title="The question could not be answered.">

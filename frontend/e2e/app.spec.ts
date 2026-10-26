@@ -161,16 +161,34 @@ test('sector rotation: chart, help panel, controls and table', async ({ page }) 
   await expect(page.getByLabel('Highlighted sectors')).toContainText('Chemicals')
 })
 
+test('sector rotation: roster by quadrant, linked highlight and week-by-week replay', async ({ page }) => {
+  await page.goto('/rotation')
+  const roster = page.getByRole('complementary', { name: 'Sectors by quadrant' })
+  await expect(roster.getByRole('heading', { name: /Leading/ })).toBeVisible()
+  const first = roster.getByRole('button').first()
+  const name = ((await first.getAttribute('title')) ?? '').split(':')[0]
+  await first.hover()
+  const tail = page.locator(`[data-testid="rrg-tail-path"][data-sector="${name}"]`)
+  await expect(tail).toHaveAttribute('opacity', '1')
+  await expect(page.locator('[data-testid="rrg-tail-path"][opacity="0.14"]').first()).toBeAttached() // the others step back
+  await page.getByTestId('rrg-play').click()
+  await expect(page.getByTestId('rrg-as-of')).toContainText('weeks back')
+  await expect(page.getByTestId('rrg-as-of')).toHaveText(/^Latest week/, { timeout: 15_000 }) // replay ends on the latest week
+})
+
 test('sector rotation: a short tail by default that can be lengthened, shortened and stepped back', async ({ page }) => {
   await page.goto('/rotation')
   const tail = page.getByTestId('rrg-tail')
-  await expect(tail).toHaveValue('2')
+  await expect(tail).toHaveValue('2') // two weeks by default
+  await page.getByTestId('rrg-tail-less').click()
+  await expect(tail).toHaveValue('1')
+  await expect(page.getByTestId('rrg-tail-less')).toBeDisabled()
+  await page.getByTestId('rrg-tail-more').click()
   await page.getByTestId('rrg-tail-more').click()
   await expect(tail).toHaveValue('3')
   await page.getByTestId('rrg-tail-less').click()
   await page.getByTestId('rrg-tail-less').click()
   await expect(tail).toHaveValue('1')
-  await expect(page.getByTestId('rrg-tail-less')).toBeDisabled()
   const latest = (await page.getByTestId('rrg-as-of').textContent()) ?? ''
   expect(latest).toMatch(/^Latest week · week ending \d{4}-\d{2}-\d{2}$/)
   await page.getByTestId('rrg-back').click()
@@ -184,7 +202,8 @@ test('sector rotation: a short tail by default that can be lengthened, shortened
   // stepping back to the first computed week offers more history
   for (let i = 0; i < 12 && (await page.getByTestId('rrg-back').isEnabled()); i++) await page.getByTestId('rrg-back').click()
   await page.getByTestId('rrg-more-history').click()
-  await expect(page.getByText('Computed on demand, not stored')).toBeVisible()
+  // computed from every stored price bar; on the whole live market this takes several seconds
+  await expect(page.getByText('Computed on demand, not stored')).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText(/trail 12 weeks/)).toBeVisible()
 })
 
@@ -199,20 +218,62 @@ test('concall follow-through: run the analysis and see commitment verdicts', asy
   await expect(page.getByText('Synthetic demo transcript').first()).toBeVisible()
 })
 
-test('watchlist and alert lifecycle with confirmation on delete', async ({ page }) => {
+// Demo stack by default; E2E_LIVE=1 runs the same flows on a real liquid stock.
+const SYM = process.env.E2E_LIVE ? 'TCS' : 'DEMOFMCG01'
+
+test('watchlists: create, add, sort, rename and delete with confirmation', async ({ page }) => {
   const name = `E2E ${Date.now()}`
   await page.goto('/watchlists')
   await page.getByRole('textbox', { name: 'New watchlist' }).fill(name)
   await page.getByRole('button', { name: 'Create watchlist' }).click()
   await expect(page.getByRole('heading', { name })).toBeVisible()
-  await page.getByPlaceholder(`Add an instrument to ${name}`).fill('DEMOFMCG01')
-  await page.getByRole('option', { name: /DEMOFMCG01/ }).click()
-  await expect(page.getByRole('link', { name: 'DEMOFMCG01' })).toBeVisible()
-  await page.getByRole('button', { name: 'Delete list' }).first().click()
+  await expect(page).toHaveURL(/\/watchlists\/\d+$/)
+  await page.getByPlaceholder(`Add an instrument to ${name}`).fill(SYM)
+  await page.getByRole('option', { name: new RegExp(`\\b${SYM}\\b`) }).first().click()
+  await expect(page.getByRole('table').getByRole('link', { name: SYM, exact: true })).toBeVisible()
+  await expect(page.getByTestId('watchlist-pulse')).toContainText('This week')
+  await page.getByRole('button', { name: /^Instrument/ }).click()
+  await expect(page.getByRole('columnheader', { name: /Instrument/ })).toHaveAttribute('aria-sort', 'ascending')
+  await page.getByRole('button', { name: 'Rename' }).click()
+  await page.getByLabel('Watchlist name').fill(`${name} renamed`)
+  await page.getByRole('button', { name: 'Save name' }).click()
+  await expect(page.getByRole('heading', { name: `${name} renamed` })).toBeVisible()
+  await page.getByRole('button', { name: 'Delete list' }).click()
   await expect(page.getByRole('heading', { name: 'Delete this watchlist?' })).toBeVisible()
   await page.getByRole('button', { name: 'Delete watchlist' }).click()
-  await expect(page.getByRole('heading', { name })).toHaveCount(0)
-  await expect(page.getByText(/never place orders/)).toBeVisible()
+  await expect(page.getByRole('heading', { name: `${name} renamed` })).toHaveCount(0)
+})
+
+test('alerts: a watchlist row opens the builder prefilled, the alert can be paused and deleted', async ({ page }) => {
+  const name = `E2E alerts ${Date.now()}`
+  await page.goto('/watchlists')
+  await page.getByRole('textbox', { name: 'New watchlist' }).fill(name)
+  await page.getByRole('button', { name: 'Create watchlist' }).click()
+  await page.getByPlaceholder(`Add an instrument to ${name}`).fill(SYM)
+  await page.getByRole('option', { name: new RegExp(`\\b${SYM}\\b`) }).first().click()
+  await page.getByRole('link', { name: `Set an alert on ${SYM}` }).click()
+  await expect(page).toHaveURL(new RegExp(`/alerts\\?instrument=${SYM}`))
+  await expect(page.getByTestId('alert-sentence')).toContainText(SYM)
+  const pct = `${7 + (Date.now() % 50) / 10}`
+  await page.getByLabel('Move of at least (%)').fill(pct)
+  await page.getByRole('button', { name: 'Create alert' }).click()
+  const rule = `${SYM} moves at least ${pct}% over 1 week`
+  await expect(page.getByText(`Alert created: ${rule}.`)).toBeVisible()
+  const sw = page.getByRole('switch', { name: `Pause: ${rule}` })
+  await expect(sw).toHaveAttribute('aria-checked', 'true')
+  await sw.click()
+  await expect(page.getByRole('switch', { name: `Resume: ${rule}` })).toHaveAttribute('aria-checked', 'false')
+  await page.getByRole('radio', { name: /Paused/ }).click()
+  await expect(page.getByText(rule, { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: `Delete alert: ${rule}` }).click()
+  await page.getByRole('button', { name: 'Delete alert', exact: true }).click()
+  await expect(page.getByText(rule, { exact: true })).toHaveCount(0)
+  await expect(page.getByText(/never place orders/).first()).toBeVisible()
+  // tidy up the list made for this test
+  await page.goto('/watchlists')
+  await page.getByRole('link', { name: new RegExp(name) }).click()
+  await page.getByRole('button', { name: 'Delete list' }).click()
+  await page.getByRole('button', { name: 'Delete watchlist' }).click()
 })
 
 test('data status: connectors, capability matrix, blocked order tools and schedule', async ({ page }) => {

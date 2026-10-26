@@ -6,22 +6,31 @@ import { ago, fmtDate } from '../lib/format'
 import { InstrumentSearch } from './InstrumentSearch'
 import { cx, stateTone } from './ui'
 import { BrokerConnectButton, BrokerLoginProvider } from './BrokerLogin'
+import { TickertapeConnectButton } from './TickertapeConnect'
+import { ChatAssistant } from './ChatAssistant'
+import { Icon, type IconName } from './Icons'
+import { SessionChip } from './MarketDesk'
 
-const NAV = [
-  { to: '/', label: 'Overview', end: true },
-  { to: '/screener', label: 'Screener' },
-  { to: '/themes', label: 'Themes' },
-  { to: '/rotation', label: 'Sector rotation' },
-  { to: '/research', label: 'Research board' },
-  { to: '/concalls', label: 'Concall follow-through' },
-  { to: '/watchlists', label: 'Watchlists and alerts' },
-  { to: '/status', label: 'Data status' },
+const NAV: Array<{ to: string; label: string; icon: IconName; end?: boolean }> = [
+  { to: '/', label: 'Overview', icon: 'overview', end: true },
+  { to: '/news', label: 'Market news', icon: 'news' },
+  { to: '/macro', label: 'Macro', icon: 'macro' },
+  { to: '/flows', label: 'FII / DII flows', icon: 'flows' },
+  { to: '/derivatives', label: 'F&O and open interest', icon: 'derivatives' },
+  { to: '/screener', label: 'Screener', icon: 'screener' },
+  { to: '/themes', label: 'Themes', icon: 'themes' },
+  { to: '/rotation', label: 'Sector rotation', icon: 'rotation' },
+  { to: '/research', label: 'Research board', icon: 'research' },
+  { to: '/concalls', label: 'Concall follow-through', icon: 'concalls' },
+  { to: '/watchlists', label: 'Watchlists', icon: 'watchlists' },
+  { to: '/alerts', label: 'Alerts', icon: 'alerts' },
+  { to: '/status', label: 'Data status', icon: 'status' },
 ]
 
 /** Persistent strip that answers "where is this data from and how fresh is it" on every page. */
 export function ProvenanceStrip({ s }: { s?: Sources }) {
   if (!s) return <div className="h-8 border-t border-rule bg-surface-2" aria-hidden />
-  const show = ['nse_bhavcopy', 'nse_cm_market', 'kite_mcp', 'llm', 'web_search']
+  const show = ['nse_bhavcopy', 'nse_cm_market', 'kite_mcp', 'tickertape_mcp', 'llm', 'web_search']
   return (
     <div
       className="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-rule bg-surface-2 px-4 py-1.5 text-xs text-ink-2 lg:px-8"
@@ -37,7 +46,7 @@ export function ProvenanceStrip({ s }: { s?: Sources }) {
           .map((c) => {
             // A reachable broker that still needs the account holder's login is not "ok" for data.
             const auth = (c as any).auth?.state
-            const state = c.key === 'kite_mcp' && auth === 'login_required' ? 'login_required' : c.state
+            const state = (c.key === 'kite_mcp' || c.key === 'tickertape_mcp') && auth === 'login_required' ? 'login_required' : c.state
             const t = stateTone(state)
             return (
               <NavLink
@@ -91,9 +100,10 @@ function useThemeToggle() {
 }
 
 const GROUPS: Array<{ label: string; items: typeof NAV }> = [
-  { label: 'Markets', items: NAV.slice(0, 4) },
-  { label: 'Research', items: NAV.slice(4, 6) },
-  { label: 'You', items: NAV.slice(6) },
+  { label: 'Markets', items: NAV.slice(0, 5) },
+  { label: 'Screening', items: NAV.slice(5, 8) },
+  { label: 'Research', items: NAV.slice(8, 10) },
+  { label: 'You', items: NAV.slice(10) },
 ]
 
 export function Layout() {
@@ -130,22 +140,23 @@ export function Layout() {
                 </svg>
                 <span className="leading-tight">
                   <span className="block font-display text-[17px] font-semibold">Markets Intelligence</span>
-                  <span className="block text-[11.5px] text-rail-ink-2">NSE research and screening</span>
+                  <span className="block text-[11.5px] text-rail-ink-2">An Accellor product</span>
                 </span>
               </NavLink>
               <button
-                className="rounded-md border border-rail-2 px-2.5 py-1.5 text-sm text-rail-ink lg:hidden"
+                className="inline-flex items-center gap-1.5 rounded-md border border-rail-2 px-2.5 py-1.5 text-sm text-rail-ink lg:hidden"
                 aria-expanded={open}
                 aria-controls="primary-nav"
                 onClick={() => setOpen((o) => !o)}
               >
+                <Icon name="menu" />
                 Menu
               </button>
             </div>
             <nav id="primary-nav" aria-label="Primary" className={cx('px-3 pb-4 lg:flex lg:flex-1 lg:flex-col', open ? 'block' : 'hidden')}>
               {GROUPS.map((g) => (
                 <div key={g.label} className="mb-3">
-                  <p className="mb-1 px-3 text-[11.5px] font-medium text-rail-ink-2">{g.label}</p>
+                  <p className="mb-1 px-3 pt-2 text-[12px] font-medium text-rail-ink-2">{g.label}</p>
                   <ul className="m-0 list-none space-y-0.5 p-0">
                     {g.items.map((n) => (
                       <li key={n.to}>
@@ -155,13 +166,14 @@ export function Layout() {
                           onClick={() => setOpen(false)}
                           className={({ isActive }) =>
                             cx(
-                              'relative block rounded-[7px] px-3 py-[7px] text-[14px] no-underline transition-colors',
+                              'group relative flex items-center gap-2.5 rounded-[7px] px-3 py-[7px] text-[14px] no-underline transition-colors',
                               isActive
-                                ? 'bg-rail-2 font-semibold text-white before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-[3px] before:rounded-full before:bg-accent'
+                                ? 'is-active bg-rail-2 font-semibold text-white before:absolute before:bottom-1.5 before:left-0 before:top-1.5 before:w-[3px] before:rounded-full before:bg-accent'
                                 : 'text-rail-ink hover:bg-rail-2/60 hover:text-white',
                             )
                           }
                         >
+                          <Icon name={n.icon} className="shrink-0 text-rail-ink-2 transition-colors group-hover:text-rail-ink group-[.is-active]:text-accent" />
                           {n.label}
                         </NavLink>
                       </li>
@@ -176,7 +188,7 @@ export function Layout() {
                   aria-label={`Switch to ${theme.dark ? 'light' : 'dark'} theme`}
                 >
                   <span>{theme.dark ? 'Dark theme' : 'Light theme'}</span>
-                  <span aria-hidden>{theme.dark ? '☾' : '☀'}</span>
+                  <Icon name={theme.dark ? 'moon' : 'sun'} />
                 </button>
                 <p className="text-[11.5px] leading-relaxed text-rail-ink-2">
                   Research and screening only. This tool cannot place orders and its output is not investment advice.
@@ -191,17 +203,21 @@ export function Layout() {
                   <InstrumentSearch
                     onPick={(i) => nav(`/instrument/${i.exchange}:${encodeURIComponent(i.symbol)}`)}
                     placeholder="Find an instrument by symbol or name"
+                    shortcut
                   />
                 </div>
                 <span className="ml-auto" />
+                <SessionChip />
                 <BrokerConnectButton />
+                <TickertapeConnectButton auth={((src.data?.connectors.find((c: any) => c.key === 'tickertape_mcp') as any)?.auth ?? null)} />
                 {src.data && (
                   <span
                     className={cx(
-                      'hidden whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium md:inline',
+                      'hidden items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium md:inline-flex',
                       src.data.is_demo ? 'bg-accent-soft text-ink' : 'bg-good-soft text-gain',
                     )}
                   >
+                    <span aria-hidden className={cx('h-[7px] w-[7px] rounded-full', src.data.is_demo ? 'bg-accent' : 'bg-gain')} />
                     {src.data.is_demo ? 'Demo data' : 'Live data'}
                   </span>
                 )}
@@ -213,6 +229,7 @@ export function Layout() {
             </main>
           </div>
         </div>
+        <ChatAssistant />
       </div>
     </BrokerLoginProvider>
   )

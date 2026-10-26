@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # While authorised, confirm the session this often (get_profile), so an idle session stays in use and a session
     # Kite has ended is noticed within minutes. 0 disables.
     kite_keepalive_seconds: float = 300.0
+    # Tickertape MCP (fallback for fundamental metrics). OAuth tokens live only in TICKERTAPE_SESSION_FILE (owner-only).
+    # The redirect URI must be the web app's address plus /api/v1/sources/tickertape/callback.
+    tickertape_mcp_url: str | None = None  # e.g. https://mcp.tickertape.in/mcp
+    tickertape_redirect_uri: str = "http://127.0.0.1:5173/api/v1/sources/tickertape/callback"
+    tickertape_session_file: Path = BACKEND_DIR / "var" / "tickertape_oauth.json"
+    tickertape_min_interval_seconds: float = 0.5
     breaker_failure_threshold: int = 5
     breaker_reset_seconds: float = 60.0
 
@@ -72,6 +78,19 @@ class Settings(BaseSettings):
     nse_equity_list_url: str | None = None  # e.g. https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv
     nse_industry_list_url: str | None = None  # e.g. .../content/indices/ind_niftytotalmarket_list.csv
     nse_bhavcopy_url_template: str | None = None  # e.g. .../content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip
+
+    # --- Market pulse: stocks in the news, FII/DII flows, F&O open interest, macro indicators. Unset = disabled.
+    nse_fo_bhavcopy_url_template: str | None = None  # e.g. .../content/fo/BhavCopy_NSE_FO_0_0_0_{yyyymmdd}_F_0000.csv.zip
+    nse_participant_oi_url_template: str | None = None  # e.g. .../content/nsccl/fao_participant_oi_{ddmmyyyy}.csv
+    # Market-traded macro series (crude, dollar index, USD/INR, US yields, Sensex). Any service answering the
+    # v8 chart format, e.g. https://query1.finance.yahoo.com/v8/finance/chart (unofficial; check its terms first).
+    macro_chart_base_url: str | None = None
+    nsdl_fpi_archive_url: str | None = None  # e.g. https://www.fpi.nsdl.co.in/web/Reports/Archive.aspx (daily FPI history)
+    macro_cpi_base_url: str | None = None  # MOSPI CPI API, e.g. https://api.mospi.gov.in/api/cpi
+    fred_api_key: SecretStr | None = None  # St. Louis Fed API key for US CPI, Fed funds, unemployment, India 10Y
+    fred_base_url: str = "https://api.stlouisfed.org/fred"
+    macro_timeout_seconds: float = 15.0
+    macro_user_agent: str = "Mozilla/5.0 (compatible; MarketsIntelligence/1.0; research)"
 
     # --- LLM: any OpenAI-compatible chat-completions provider (OpenRouter, OpenAI, Together, Groq,
     # a vLLM/Ollama server, ...). Everything provider-specific is configuration; nothing is built in.
@@ -109,6 +128,7 @@ class Settings(BaseSettings):
     price_refresh_cron: str = "30 19 * * 1-5"  # after NSE close
     instrument_refresh_cron: str = "0 7 * * 1-5"
     alerts_cron: str = "*/15 * * * *"
+    fii_dii_cron: str = "30 19,21 * * 1-5"  # NSE publishes the day's provisional FII/DII figures in the evening
 
     # --- Universe and benchmark
     universe_file: Path = BACKEND_DIR / "data" / "reference" / "nse_universe.csv"
@@ -125,6 +145,7 @@ class Settings(BaseSettings):
     cache_ttl_instrument: int = 24 * 3600
     rate_limit_research_per_minute: int = 6
     rate_limit_refresh_per_minute: int = 3
+    rate_limit_chat_per_minute: int = 20
     rate_limit_default_per_minute: int = 300
     max_request_bytes: int = 5_000_000
 

@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { ApiError, waitForJob } from '../api/client'
 import { MISSING, STATUS_LABEL } from '../lib/format'
+import { Icon, type IconName } from './Icons'
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
@@ -105,7 +106,7 @@ export function Missing({ reason, status }: { reason?: string | null; status?: s
 
 export function Panel({ title, aside, children, className, id }: { title?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string; id?: string }) {
   return (
-    <section id={id} className={cx('panel rounded-[10px] border border-rule bg-surface', className)}>
+    <section id={id} className={cx('panel rounded-xl border border-rule bg-surface', className)}>
       {(title || aside) && (
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-3">
           {title && <h2 className="text-[15.5px] font-semibold tracking-[-0.01em]">{title}</h2>}
@@ -119,10 +120,10 @@ export function Panel({ title, aside, children, className, id }: { title?: React
 
 export function PageHeader({ title, lede, actions, refresh }: { title: string; lede?: ReactNode; actions?: ReactNode; refresh?: ReactNode }) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-x-6 gap-y-3 border-b border-rule pb-4">
-      <div className="max-w-[72ch]">
-        <h1 className="text-[30px] font-semibold leading-[1.1] tracking-[-0.02em]">{title}</h1>
-        {lede && <p className="mt-1.5 text-[14.5px] text-ink-2">{lede}</p>}
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-x-6 gap-y-3 border-b border-rule pb-5">
+      <div className="max-w-[68ch]">
+        <h1 className="text-[32px] font-semibold leading-[1.05] tracking-[-0.025em] lg:text-[36px]">{title}</h1>
+        {lede && <p className="mt-2 text-[15px] leading-relaxed text-ink-2">{lede}</p>}
       </div>
       {(actions || refresh) && (
         <div className="flex flex-wrap items-center gap-2">
@@ -328,5 +329,69 @@ export function Kv({ k, children, hint }: { k: string; children: ReactNode; hint
       </dt>
       <dd className="num m-0 text-right font-medium">{children}</dd>
     </div>
+  )
+}
+
+/** KPI tile (Figma: StatTile). `meter` draws an up/down split so breadth reads at a glance. */
+export function StatTile({ icon, label, value, foot, tone = 'info', meter }: { icon: IconName; label: string; value: ReactNode; foot?: ReactNode; tone?: 'info' | 'warn' | 'good' | 'bad'; meter?: { up: number; down: number } | null }) {
+  const chip = { info: 'bg-info-soft text-link', warn: 'bg-warn-soft text-warn', good: 'bg-good-soft text-gain', bad: 'bg-danger-soft text-loss' }[tone]
+  const total = meter ? meter.up + meter.down : 0
+  return (
+    <div className="panel flex min-w-0 flex-col gap-2.5 rounded-xl border border-rule bg-surface p-4">
+      <div className="flex items-center gap-2">
+        <span className={cx('grid h-7 w-7 shrink-0 place-items-center rounded-[7px]', chip)}>
+          <Icon name={icon} />
+        </span>
+        <span className="truncate text-[12.5px] font-medium text-ink-2">{label}</span>
+      </div>
+      <div className="num font-display text-[26px] font-semibold leading-8 tracking-[-0.01em]">{value}</div>
+      {meter && total > 0 && (
+        <div className="flex h-1.5 gap-0.5 overflow-hidden rounded-full" role="img" aria-label={`${meter.up} up, ${meter.down} down`}>
+          <span className="bg-gain" style={{ width: `${(meter.up / total) * 100}%` }} />
+          <span className="flex-1 bg-loss" />
+        </div>
+      )}
+      {foot && <div className="text-xs text-ink-3">{foot}</div>}
+    </div>
+  )
+}
+
+const QUADRANT_TONE: Record<string, { bg: string; dot: string }> = {
+  Leading: { bg: 'bg-[var(--quad-leading)]', dot: 'bg-gain' },
+  Weakening: { bg: 'bg-[var(--quad-weakening)]', dot: 'bg-accent' },
+  Lagging: { bg: 'bg-[var(--quad-lagging)]', dot: 'bg-loss' },
+  Improving: { bg: 'bg-[var(--quad-improving)]', dot: 'bg-link' },
+}
+
+/** RRG quadrant label with the same fill as the rotation chart's quadrant backgrounds. */
+export function QuadrantChip({ quadrant }: { quadrant: string }) {
+  const t = QUADRANT_TONE[quadrant] ?? { bg: 'bg-surface-2', dot: 'bg-ink-3' }
+  return (
+    <span className={cx('inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium text-ink', t.bg)}>
+      <span aria-hidden className={cx('h-[7px] w-[7px] rounded-full', t.dot)} />
+      {quadrant}
+    </span>
+  )
+}
+
+/** Horizontal bar around a zero axis. Decorative: the signed number always sits beside it. */
+export function DivergingBar({ value, max }: { value: number | null | undefined; max: number }) {
+  if (value == null || !Number.isFinite(value) || max <= 0) return <div className="h-2.5" aria-hidden />
+  const w = Math.max(1.5, (Math.min(Math.abs(value), max) / max) * 50)
+  return (
+    <div className="relative h-2.5" aria-hidden>
+      <span className="absolute inset-y-[-3px] left-1/2 w-px bg-rule-strong" />
+      <span className={cx('absolute inset-y-0 rounded-sm', value >= 0 ? 'bg-gain' : 'bg-loss')} style={value >= 0 ? { left: '50%', width: `${w}%` } : { right: '50%', width: `${w}%` }} />
+    </div>
+  )
+}
+
+/** Thin magnitude bar for leaderboards (Figma: MoverRow › Track). */
+export function MagnitudeBar({ value, max, tone = 'link' }: { value: number; max: number; tone?: 'link' | 'gain' | 'loss' }) {
+  const pct = max > 0 ? Math.max(4, Math.min(100, (Math.abs(value) / max) * 100)) : 0
+  return (
+    <span className="block h-1 w-16 overflow-hidden rounded-full bg-rule" aria-hidden>
+      <span className={cx('block h-full rounded-full', { link: 'bg-link', gain: 'bg-gain', loss: 'bg-loss' }[tone])} style={{ width: `${pct}%` }} />
+    </span>
   )
 }

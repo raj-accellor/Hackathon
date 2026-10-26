@@ -4,7 +4,11 @@ import { ApiError } from './api/client'
 import { Layout } from './components/Layout'
 import { EmptyState } from './components/ui'
 import { Concalls } from './pages/Concalls'
+import { Derivatives } from './pages/Derivatives'
+import { Flows } from './pages/Flows'
 import { Instrument } from './pages/Instrument'
+import { Macro } from './pages/Macro'
+import { News } from './pages/News'
 import { Overview } from './pages/Overview'
 import { Research } from './pages/Research'
 import { Rotation } from './pages/Rotation'
@@ -12,6 +16,7 @@ import { Screener } from './pages/Screener'
 import { Status } from './pages/Status'
 import { ThemeDetail, Themes } from './pages/Themes'
 import { Watchlists } from './pages/Watchlists'
+import { Alerts } from './pages/Alerts'
 
 const client = new QueryClient({
   defaultOptions: {
@@ -30,6 +35,10 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Overview />} />
+            <Route path="news" element={<News />} />
+            <Route path="macro" element={<Macro />} />
+            <Route path="flows" element={<Flows />} />
+            <Route path="derivatives" element={<Derivatives />} />
             <Route path="screener" element={<Screener />} />
             <Route path="themes" element={<Themes />} />
             <Route path="themes/:id" element={<ThemeDetail />} />
@@ -40,6 +49,8 @@ export default function App() {
             <Route path="concalls" element={<Concalls />} />
             <Route path="concalls/:ref" element={<Concalls />} />
             <Route path="watchlists" element={<Watchlists />} />
+            <Route path="watchlists/:id" element={<Watchlists />} />
+            <Route path="alerts" element={<Alerts />} />
             <Route path="status" element={<Status />} />
             <Route path="*" element={<EmptyState title="This page does not exist" action={<Link to="/">Go to the overview</Link>} />} />
           </Route>

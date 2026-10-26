@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.container import Container
 from app.db.models import Instrument, MetricSnapshot, PriceBar, ThemeSnapshot, ThemeSnapshotConstituent
 from app.domain.rrg import RRGError
-from app.services import alerts, ingestion, market_files, metrics, sector_rotation, themes
+from app.services import alerts, ingestion, market_files, metrics, provider_ratios, sector_rotation, themes
 
 
 async def instruments_job(c: Container, s: AsyncSession, refresh_labels: bool = True) -> dict[str, Any]:
@@ -41,8 +41,21 @@ async def prices_job(c: Container, s: AsyncSession) -> dict[str, Any]:
     await ingestion.resolve_broker_identifiers(c, s)
     fundamentals = await ingestion.ingest_fundamentals(c, s)
     m = await metrics.compute_all(c, s)
+    # Tickertape fills fundamentals NSE filings leave missing; it needs the metrics above to know what is missing.
+    fallback = await provider_ratios.backfill(c, s)
+    if fallback.get("stored"):
+        m = await metrics.compute_all(c, s)
     await c.cache.delete_prefix("api:")
-    return {"prices": prices, "fundamentals": fundamentals, "metrics": m}
+    return {"prices": prices, "fundamentals": fundamentals, "tickertape_fundamentals": fallback, "metrics": m}
+
+
+async def tickertape_fundamentals_job(c: Container, s: AsyncSession) -> dict[str, Any]:
+    """Fill missing fundamentals from Tickertape (after its login, or on demand), then recompute metrics."""
+    out: dict[str, Any] = {"backfill": await provider_ratios.backfill(c, s)}
+    if out["backfill"].get("stored"):
+        out["metrics"] = await metrics.compute_all(c, s)
+        await c.cache.delete_prefix("api:")
+    return out
 
 
 async def rrg_job(c: Container, s: AsyncSession) -> dict[str, Any]:

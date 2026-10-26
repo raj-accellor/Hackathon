@@ -42,6 +42,10 @@ class McpToolError(McpError):
     """The tool ran and reported an error (`isError`) or the server returned a JSON-RPC error."""
 
 
+class McpUnauthorized(McpError):
+    """HTTP 401: the server needs (fresh) OAuth credentials. Not an outage: never counted by the breaker or retried."""
+
+
 class McpNotSupported(McpError):
     """The server does not advertise this tool."""
 
@@ -139,6 +143,8 @@ class McpClient:
             raise McpUnavailable(f"cannot reach {self.name}: {type(e).__name__}: {e}") from e
         if r.status_code == 202 or (r.status_code == 200 and not r.content):
             return None
+        if r.status_code == 401:
+            raise McpUnauthorized(f"{self.name} requires authorisation (HTTP 401)")
         if r.status_code == 404 and self._session_id:
             raise _SessionExpired("session not found")
         if r.status_code >= 500 or r.status_code == 429:
@@ -274,6 +280,9 @@ class McpClient:
                     cursor = (res or {}).get("nextCursor")
                     if not cursor:
                         break
+            except McpUnauthorized:
+                self.connected = False
+                raise
             except McpError as e:
                 self.connected = False
                 self._fail(e)
@@ -284,6 +293,13 @@ class McpClient:
             self._breaker.success()
             self._stats["last_success_at"] = self.clock.now()
             return self.tools
+
+    def set_bearer(self, token: str | None) -> None:
+        """Send `Authorization: Bearer <token>` on every request (None removes it). The token is never logged."""
+        if token:
+            self._http.headers["Authorization"] = f"Bearer {token}"
+        else:
+            self._http.headers.pop("Authorization", None)
 
     async def close(self) -> None:
         await self._http.aclose()

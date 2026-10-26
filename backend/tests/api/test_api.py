@@ -304,8 +304,8 @@ async def test_builtin_theme_cannot_be_edited_and_bad_specs_are_rejected(demo):
 # ------------------------------------------------------------ sector rotation
 async def test_rotation_snapshot_has_trails_quadrants_method_and_timestamps(demo):
     d = await get(demo, "/sector-rotation")
-    assert d["benchmark"] == dd.BENCHMARK and d["version"] == "rrg-v1" and d["data_as_of"] and d["computed_at"]
-    assert d["params"] == {"ratio_window": 12, "momentum_window": 5, "trail": 10, "frequency": "W-FRI"}
+    assert d["benchmark"] == dd.BENCHMARK and d["version"] == "rrg-v2" and d["data_as_of"] and d["computed_at"]
+    assert d["params"] == {"ratio_window": 12, "momentum_window": 5, "trail": 10, "smoothing": 4, "frequency": "W-FRI"}
     assert len(d["sectors"]) == 10 and "RS-Ratio" in d["method"] and "do not predict" in d["interpretation"]
     for s in d["sectors"].values():
         assert s["status"] == "ok" and len(s["trail"]) == 10 and s["quadrant"] in ("Leading", "Weakening", "Lagging", "Improving")
@@ -422,6 +422,16 @@ async def test_watchlist_lifecycle(demo):
     assert (await demo.client.delete(API + f"/watchlists/{wid}/items/{item}")).json()["items"] == []
     assert (await demo.client.delete(API + f"/watchlists/{wid}")).status_code == 409
     assert (await demo.client.delete(API + f"/watchlists/{wid}", params={"confirm": True})).json() == {"deleted": wid}
+
+
+async def test_watchlist_rename_rejects_duplicates_and_blank_names(demo):
+    a = (await demo.client.post(API + "/watchlists", json={"name": "Banks"})).json()
+    await demo.client.post(API + "/watchlists", json={"name": "IT"})
+    r = await demo.client.patch(API + f"/watchlists/{a['id']}", json={"name": "  Private banks "})
+    assert r.status_code == 200 and r.json()["name"] == "Private banks"
+    assert (await demo.client.patch(API + f"/watchlists/{a['id']}", json={"name": "IT"})).status_code == 409
+    assert (await demo.client.patch(API + f"/watchlists/{a['id']}", json={"name": "   "})).status_code == 422
+    assert (await demo.client.patch(API + "/watchlists/99999", json={"name": "x"})).status_code == 404
 
 
 async def test_alerts_are_idempotent_and_do_not_duplicate_notifications(demo):

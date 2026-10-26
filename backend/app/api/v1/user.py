@@ -401,6 +401,20 @@ async def remove_watch_item(wid: int, item_id: int, c: Ctx, s: Db, actor: Actor)
     return await _wl_dict(s, w)
 
 
+@router.patch("/watchlists/{wid}")
+async def rename_watchlist(wid: int, body: WatchlistIn, c: Ctx, s: Db, actor: Actor) -> dict[str, Any]:
+    w = await _watchlist(s, wid, actor)
+    name = body.name.strip()
+    if not name:
+        raise ApiError(422, "invalid_name", "A watchlist name cannot be blank.")
+    if name != w.name and await s.scalar(select(Watchlist.id).where(Watchlist.owner == actor, Watchlist.name == name)):
+        raise ApiError(409, "duplicate", "A watchlist with this name already exists.")
+    await audit(s, actor, "watchlist.rename", "watchlist", wid, {"from": w.name, "to": name})
+    w.name = name
+    await s.commit()
+    return await _wl_dict(s, w)
+
+
 @router.delete("/watchlists/{wid}")
 async def delete_watchlist(wid: int, c: Ctx, s: Db, actor: Actor, confirm: bool = False) -> dict[str, Any]:
     w = await _watchlist(s, wid, actor)
