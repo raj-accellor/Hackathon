@@ -222,7 +222,7 @@ export function BrokerLoginProvider({ enabled, auth, children }: { enabled: bool
                   <button type="button" onClick={login} className="font-semibold text-link underline-offset-2 hover:underline" data-testid="broker-login-link">
                     Open the Kite login page
                   </button>{' '}
-                  and sign in with your Zerodha account. A new link is requested each time, so it is always valid.
+                  and sign in with your Zerodha account. Finish in that one tab: opening the page again within a few minutes reuses the same link.
                 </li>
                 <li>Approve access, then come back and choose “I have approved it”.</li>
               </ol>

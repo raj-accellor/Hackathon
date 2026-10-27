@@ -95,3 +95,38 @@ async def test_disconnect_endpoint_and_status_after_it(demo, mock_state):
     assert events[0]["action"] == "broker.logout"
     mock_state.kite_logged_in = True  # the mock's approval is global, so restore the state other tests expect
     await demo.container.kite.auth_state()
+
+
+async def test_a_login_link_is_issued_on_a_fresh_session_unless_a_live_link_exists(mock_mcp, mock_state, tmp_path):
+    """Reported 27 Oct 2026: Kite login failed. Kite ends every MCP session 12 hours after it was opened (then answers
+    "Session terminated"), but the API kept one session for as long as it could, so the morning login was bound to a
+    session opened the evening before and died minutes later. A login therefore starts on a new session, which gets
+    Kite's full 12 hours, while a link still inside Kite's 5-minute signature window keeps its session."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.connectors.kite_mcp import LOGIN_LINK_TTL_SECONDS
+
+    store = tmp_path / "kite_mcp_session.json"
+    mock_state.kite_logged_in = False
+    k = _kite(mock_mcp, store)
+    await k.start()
+    old = k.client._session_id
+
+    first = await k.login_link()
+    assert first["login_url"] and k.client._session_id != old, "the link belongs to a newly opened session"
+    assert json.loads(store.read_text())["session_id"] == k.client._session_id, "the new session is saved"
+    fresh = k.client._session_id
+
+    calls = k.client._stats["calls"]
+    again = await k.login_link()  # a second click while the first login may still be in progress
+    assert again["login_url"] and k.client._session_id == fresh, "a live link's session is not replaced"
+    # Kite's login tool, called on a session not yet approved, clears that session's Kite data ("error completing Kite
+    # session" for a login in progress), so a second click reuses the link instead of asking for another one.
+    assert again["login_url"] == first["login_url"]
+    assert k.client._stats["calls"] == calls + 1, "only get_profile ran; the login tool was not called again"
+
+    k._link_issued_at = datetime.now(UTC) - timedelta(seconds=LOGIN_LINK_TTL_SECONDS + 1)  # every link has expired
+    await k.login_link()
+    assert k.client._session_id != fresh
+    await k.close()
+    mock_state.kite_logged_in = True  # the mock's approval is global, so restore the state other tests expect

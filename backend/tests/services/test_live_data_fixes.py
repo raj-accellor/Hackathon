@@ -379,6 +379,7 @@ async def test_a_failed_login_tool_explains_why_there_is_no_link(demo, mock_stat
 
     mock_state.kite_logged_in = False
     k = demo.container.kite
+    k._pending_login_url = k._link_issued_at = None  # no link from an earlier test that a click could reuse
     real = k.client.call
 
     async def call(tool, args=None):
@@ -397,10 +398,11 @@ async def test_login_link_is_issued_on_click_and_an_expired_link_is_never_served
     mock_state.kite_logged_in = False
     status = (await demo.client.post(API + "/sources/broker/login")).json()["kite_mcp"]
     assert status["state"] == "login_required" and not status["login_url"], "a status check issues no link"
-    # Clicking "open the login page" asks Kite for a new link each time.
+    # Clicking "open the login page" issues a link; a second click while it is still valid gets the same link, because
+    # Kite's login tool discards a not-yet-approved session's data and would break the login in progress (27 Oct 2026).
     first = (await demo.client.post(API + "/sources/broker/login-link")).json()["kite_mcp"]
     clicked = (await demo.client.post(API + "/sources/broker/login-link")).json()["kite_mcp"]
-    assert first["login_url"] and clicked["login_url"] != first["login_url"]
+    assert first["login_url"] and clicked["login_url"] == first["login_url"]
     # Reported 19 Oct 2026: background checks replaced the link while the user was still approving it in Kite.
     # A status check, even after the link has aged, must leave the link the user opened alone.
     k = demo.container.kite
@@ -415,8 +417,10 @@ async def test_login_link_is_issued_on_click_and_an_expired_link_is_never_served
         bad = await h.get(stale)
         assert bad.status_code == 400 and "invalid authorize session" in bad.text
         mock_state.link_ttl_seconds = 300.0
-        # ... while the link handed out on click authorises the session.
+        # ... while a click after the reuse window gets a new link, which authorises the session.
+        k._link_issued_at = datetime.now(UTC) - timedelta(seconds=kite_mcp.LOGIN_LINK_REUSE_SECONDS + 1)
         fresh = (await demo.client.post(API + "/sources/broker/login-link")).json()["kite_mcp"]["login_url"]
+        assert fresh != stale
         ok = await h.get(fresh)
         assert ok.status_code == 200
     done = (await demo.client.post(API + "/sources/broker/login")).json()["kite_mcp"]

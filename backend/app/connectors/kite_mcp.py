@@ -29,6 +29,8 @@ _LOGIN_HINT = re.compile(r"log\s?in|logged in|session|unauthori[sz]ed|authentica
 _URL = re.compile(r"https?://[^\s)\]>\"']+")
 ORDER_POLICY = "blocked by policy: this product never places orders"
 LOGIN_LINK_MAX_AGE_SECONDS = 60  # Kite rejects older authorisation links as "invalid authorize session"
+LOGIN_LINK_TTL_SECONDS = 300  # Kite's signature window: after this no approval can still arrive for a link
+LOGIN_LINK_REUSE_SECONDS = LOGIN_LINK_TTL_SECONDS - 60  # a repeated click reuses the link while it has a minute left to open
 
 
 class KiteMcpProvider:
@@ -45,6 +47,7 @@ class KiteMcpProvider:
         self._auth: dict[str, Any] = {"state": "unknown"}
         self._pending_login_url: str | None = None  # a link has been issued and not yet approved
         self._link_issued_at: datetime | None = None
+        self._link_session: str | None = None  # the MCP session the pending link authorises
         self._login_error: str | None = None
         self._resets_at_auth = 0  # the client's session-reset count when the session was last confirmed authorised
 
@@ -175,6 +178,7 @@ class KiteMcpProvider:
         m = _URL.search(text if isinstance(text, str) else str(text))
         self._pending_login_url = m.group(0) if m else None
         self._link_issued_at = datetime.now(UTC) if m else None
+        self._link_session = self.client.session_id  # type: ignore[union-attr]
         self._login_error = None if m else "Kite's login tool returned no authorisation link"
         return self._pending_login_url
 
@@ -190,6 +194,23 @@ class KiteMcpProvider:
         st = await self.auth_state()
         if st.get("state") != "login_required":
             return st
+        # A second click while a link is still valid gets that same link. Kite's login tool, called on a session that is
+        # not yet approved, discards the session's Kite data, so calling it again would break a login in progress
+        # ("error completing Kite session" on Kite's callback page).
+        age = (datetime.now(UTC) - self._link_issued_at).total_seconds() if self._link_issued_at else None
+        same_session = self._link_session is not None and self._link_session == self.client.session_id  # type: ignore[union-attr]
+        if self._pending_login_url and same_session and age is not None and age < LOGIN_LINK_REUSE_SECONDS:
+            self._auth = {**{k: v for k, v in st.items() if k != "reason"}, **self._link_fields()}
+            return self._auth
+        # Kite ends an MCP session 12 hours after it was opened, and the approval dies with it. The session in use may be
+        # one restored from yesterday, so every new link is issued on a new session.
+        try:
+            await self.client.forget_session()  # type: ignore[union-attr]
+        except McpError as e:
+            self._auth = {"state": "unavailable", "reason": f"could not open a new Kite session: {str(e)[:200]}",
+                          "checked_at": datetime.now(UTC).isoformat()}
+            return self._auth
+        self._resets_at_auth = self.client.session_resets  # type: ignore[union-attr]
         await self._issue_login_link()  # only here, when the user is about to open it
         self._auth = {**{k: v for k, v in st.items() if k != "reason"}, **self._link_fields()}
         return self._auth

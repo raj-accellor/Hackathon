@@ -125,6 +125,10 @@ class McpClient:
             return dict(self.advertised)
         return {k: v for k, v in self.advertised.items() if k in self.allowed_tools}
 
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
     def has_tool(self, name: str) -> bool:
         return name in self.tools
 
