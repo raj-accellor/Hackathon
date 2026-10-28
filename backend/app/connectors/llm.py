@@ -71,7 +71,7 @@ class ChatCompletionsLLM:
     def __init__(self, *, api_key: str | None, model_id: str | None, enabled: bool, base_url: str | None,
                  provider_name: str = "LLM", extra_headers: dict[str, str] | None = None, extra_body: dict[str, Any] | None = None,
                  verify_model_list: bool = True, response_format: str = "json_schema", timeout: float = 60.0, max_retries: int = 1,
-                 max_output_tokens: int = 4000, temperature: float = 0.1, daily_budget: int = 200, daily_token_budget: int = 2_000_000,
+                 max_output_tokens: int = 4000, max_tokens_param: str = "max_tokens", temperature: float = 0.1, daily_budget: int = 200, daily_token_budget: int = 2_000_000,
                  transport: httpx.AsyncBaseTransport | None = None) -> None:
         self._token, self.model_id, self.enabled = api_key, model_id, enabled
         self.label = provider_name or "LLM"
@@ -80,6 +80,7 @@ class ChatCompletionsLLM:
         self._extra_body = dict(extra_body or {})
         self.verify_model_list, self.response_format = verify_model_list, response_format
         self.max_retries, self.max_output_tokens, self.temperature = max_retries, max_output_tokens, temperature
+        self.max_tokens_param = max_tokens_param
         self.daily_budget, self.daily_token_budget = daily_budget, daily_token_budget
         self._http = httpx.AsyncClient(timeout=timeout, transport=transport)
         self._day = datetime.now(UTC).date()
@@ -146,6 +147,9 @@ class ChatCompletionsLLM:
         try:
             await self._chat([{"role": "user", "content": "Reply with the single word OK."}], None, max_tokens=5)
             self._verified = {"ok": True, "checked_at": datetime.now(UTC).isoformat()}
+        except LLMTruncated:
+            # A reasoning model can spend the tiny probe budget thinking; the route, key and model still answered.
+            self._verified = {"ok": True, "checked_at": datetime.now(UTC).isoformat()}
         except LLMError as e:
             self._verified = {"ok": False, "reason": str(e), "checked_at": datetime.now(UTC).isoformat(),
                               "suggestions": await self._similar_models()}
@@ -185,8 +189,9 @@ class ChatCompletionsLLM:
         self._roll()
         if self._usage["calls"] >= self.daily_budget or self._usage["total_tokens"] >= self.daily_token_budget:
             raise LLMBudgetExceeded("daily LLM budget reached; research falls back to deterministic summaries until tomorrow (UTC)")
+        budget = max_tokens or self.max_output_tokens
         body: dict[str, Any] = {"model": self.model_id, "messages": messages, "temperature": self.temperature,
-                                "max_tokens": max_tokens or self.max_output_tokens, **self._extra_body}
+                                self.max_tokens_param: budget, **self._extra_body}
         if response_format:
             body["response_format"] = response_format
         last: Exception | None = None
@@ -247,7 +252,7 @@ class ChatCompletionsLLM:
             if not content.strip() and choice.get("finish_reason") == "length":
                 self._err(LLMTruncated("truncated"))
                 raise LLMTruncated(
-                    f"{self.label} used the whole output budget ({body['max_tokens']} tokens) before writing an answer "
+                    f"{self.label} used the whole output budget ({budget} tokens) before writing an answer "
                     "(reasoning tokens count against it). Raise LLM_MAX_OUTPUT_TOKENS or lower reasoning in LLM_EXTRA_BODY.")
             return content
         raise last or LLMUnavailable("LLM request failed")
@@ -298,5 +303,6 @@ def build_llm(s: Any, secret: Any) -> ChatCompletionsLLM:
         api_key=secret(s.llm_api_key), model_id=s.llm_model_id, enabled=s.llm_enabled, base_url=s.llm_base_url,
         provider_name=s.llm_provider_name, extra_headers=s.llm_extra_headers, extra_body=s.llm_extra_body,
         verify_model_list=s.llm_verify_model_list, response_format=s.llm_response_format, timeout=s.llm_timeout_seconds,
-        max_retries=s.llm_max_retries, max_output_tokens=s.llm_max_output_tokens, temperature=s.llm_temperature,
+        max_retries=s.llm_max_retries, max_output_tokens=s.llm_max_output_tokens,
+        max_tokens_param=s.llm_max_tokens_param, temperature=s.llm_temperature,
         daily_budget=s.llm_daily_budget, daily_token_budget=s.llm_daily_token_budget)

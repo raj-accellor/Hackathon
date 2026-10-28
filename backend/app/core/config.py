@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 1
     llm_max_output_tokens: int = 4000  # reasoning models count thinking tokens against this
+    # Name of the output-limit field: OpenAI/Azure OpenAI reasoning models (o-series, GPT-5) reject max_tokens.
+    llm_max_tokens_param: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     llm_temperature: float = 0.1
     llm_daily_budget: int = 200  # research calls per UTC day
     llm_daily_token_budget: int = 2_000_000

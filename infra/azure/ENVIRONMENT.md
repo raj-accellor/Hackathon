@@ -30,7 +30,7 @@ The vault currently holds no secrets. Add these, then reference them from the `a
 | Env var on `api` container | Key Vault secret name | Value | Source |
 |---|---|---|---|
 | `DATABASE_URL` | `database-url` | `postgresql+psycopg://pgadmin:<PGADMIN_PASSWORD>@psql-markets-hackathon.postgres.database.azure.com:5432/markets?sslmode=require` | Only the `pgadmin` password is missing: fill it into `.env.azure` (URL-encode `@ : / # ? %`) or reset it with `az postgres flexible-server update -g HK-RG-04 -n psql-markets-hackathon --admin-password <new>` |
-| `LLM_API_KEY` | `llm-api-key` | In `.env.azure` (copied from `.env`) | OpenRouter key. **Rotate** it at openrouter.ai → Keys (it was exposed in a terminal session) and update the vault |
+| `LLM_API_KEY` | `llm-api-key` | In `.env.azure` (Azure OpenAI key 1 of `aif-markets-Hacakathon`) | `az cognitiveservices account keys list -n aif-markets-Hacakathon -g HK-RG-04 --query key1 -o tsv`. The old OpenRouter key is no longer used — revoke it at openrouter.ai (it was exposed) |
 | `API_AUTH_TOKEN` | `api-auth-token` | In `.env.azure` (freshly generated, 64 hex chars) | Generated with `openssl rand -hex 32` |
 | `WEB_SEARCH_API_KEY` | `web-search-api-key` | In `.env.azure` (copied from `.env`) | Tavily key. Unused while `WEB_SEARCH_PROVIDER=ddgs`; **rotate** it at tavily.com (exposed) |
 
@@ -104,25 +104,32 @@ Set on the `api` container of `markets`. The `web` container needs only what sec
 
 `{yyyymmdd}` / `{ddmmyyyy}` are literal placeholders the app fills in — store them exactly as shown.
 
-### LLM
+### LLM (Azure OpenAI)
 
-| Variable | Azure value |
-|---|---|
-| `LLM_ENABLED` | `true` |
-| `LLM_PROVIDER_NAME` | `OpenRouter` |
-| `LLM_BASE_URL` | `https://openrouter.ai/api/v1` |
-| `LLM_MODEL_ID` | `z-ai/glm-5.3-flash` |
-| `LLM_EXTRA_HEADERS` | `{"X-Title": "Markets Intelligence"}` |
-| `LLM_EXTRA_BODY` | `{"usage": {"include": true}, "reasoning": {"effort": "low", "exclude": true}}` |
-| `LLM_RESPONSE_FORMAT` | `json_schema` |
-| `LLM_VERIFY_MODEL_LIST` | `true` |
-| `LLM_TIMEOUT_SECONDS` | `60` |
-| `LLM_MAX_RETRIES` | `1` |
-| `LLM_MAX_OUTPUT_TOKENS` | `6000` |
-| `LLM_DAILY_BUDGET` | `200` |
-| `LLM_DAILY_TOKEN_BUDGET` | `2000000` |
+Provider: Azure AI Services resource `aif-markets-Hacakathon` (`HK-RG-04`), deployment `gpt-5.4-mini`
+(model `gpt-5.4-mini` 2026-03-17, GlobalStandard). Verified end to end against this deployment with all seven
+response schemas the app uses.
 
-`LLM_EXTRA_HEADERS` only carries `X-Title`; move it to Key Vault if it ever holds a token.
+| Variable | Azure value | Why |
+|---|---|---|
+| `LLM_ENABLED` | `true` | |
+| `LLM_PROVIDER_NAME` | `Azure OpenAI` | Display label only |
+| `LLM_BASE_URL` | `https://aif-markets-hacakathon.cognitiveservices.azure.com/openai/v1` | Azure OpenAI v1 endpoint (OpenAI-compatible, accepts the key as `Bearer`) |
+| `LLM_MODEL_ID` | `gpt-5.4-mini` | The **deployment** name |
+| `LLM_MAX_TOKENS_PARAM` | `max_completion_tokens` | GPT-5 models reject `max_tokens` (HTTP 400) |
+| `LLM_RESPONSE_FORMAT` | `json_object` | Azure strict `json_schema` rejects the app's Pydantic schemas (requires `additionalProperties: false` on every object). The schema still goes in the prompt and replies are validated with Pydantic, with one repair attempt |
+| `LLM_VERIFY_MODEL_LIST` | `false` | Azure's `/models` lists base models, not deployments |
+| `LLM_EXTRA_HEADERS` | *(empty)* | The OpenRouter `X-Title` header is not needed |
+| `LLM_EXTRA_BODY` | *(empty)* | Do **not** set `reasoning_effort`: with it, GPT-5 models accept only temperature 1 and reject the app's 0.1. Empty = no reasoning tokens, low temperature |
+| `LLM_TIMEOUT_SECONDS` | `60` | |
+| `LLM_MAX_RETRIES` | `1` | |
+| `LLM_MAX_OUTPUT_TOKENS` | `6000` | |
+| `LLM_DAILY_BUDGET` | `200` | |
+| `LLM_DAILY_TOKEN_BUDGET` | `2000000` | |
+
+`LLM_API_KEY` (Key Vault `llm-api-key`) is the resource key:
+`az cognitiveservices account keys list -n aif-markets-Hacakathon -g HK-RG-04 --query key1 -o tsv`.
+It is already in `.env.azure`.
 
 ### Web search
 

@@ -206,6 +206,34 @@ async def test_model_check_still_probes_when_the_list_is_unreachable():
     assert (await m.check_availability())["ok"] is True
 
 
+async def test_reasoning_models_get_max_completion_tokens_instead_of_max_tokens(monkeypatch):
+    """OpenAI / Azure OpenAI reasoning models (GPT-5, o-series) reject max_tokens with HTTP 400."""
+    bodies = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return _resp('{"answer": "ok", "score": 4}')
+
+    m = client(h, max_tokens_param="max_completion_tokens", max_output_tokens=6000)
+    await m.complete_validated("system", "user", Out)
+    assert bodies[0]["max_completion_tokens"] == 6000 and "max_tokens" not in bodies[0]
+
+    monkeypatch.setenv("LLM_MAX_TOKENS_PARAM", "max_completion_tokens")
+    assert build_llm(Settings(_env_file=None), _secret).max_tokens_param == "max_completion_tokens"
+    assert Settings(_env_file=None, llm_max_tokens_param="max_tokens").llm_max_tokens_param == "max_tokens"
+
+
+async def test_model_check_passes_when_a_reasoning_model_spends_the_probe_budget_thinking():
+    def h(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/models"):
+            return httpx.Response(404)
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "length"}],
+                                         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+
+    m = client(h, max_tokens_param="max_completion_tokens")
+    assert (await m.check_availability())["ok"] is True
+
+
 # ------------------------------------------------------------ wiring
 async def test_container_builds_the_configured_provider(tmp_path):
     s = Settings(_env_file=None, app_env="test", database_url=f"sqlite+aiosqlite:///{tmp_path}/o.db", scheduler_enabled=False,
